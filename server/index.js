@@ -30,13 +30,12 @@ const io = new Server(server, {
     }
 });
 
-// Use /tmp for writable storage in some serverless envs, or fall back to local
+// Use /tmp for writable storage in Vercel (Serverless), or local file for dev
+// WARNING: /tmp on Vercel is ephemeral. Data will be lost when the function sleeps.
+// For production, connect to a real database (MongoDB/Postgres).
 const DB_FILE = process.env.VERCEL ? '/tmp/data.json' : path.join(__dirname, 'data.json');
 
 // --- Database Helpers ---
-// Note: On Vercel Serverless, file system is not persistent. 
-// You MUST use an external DB (Mongo/Postgres) for real persistence.
-// This file-based DB only works on persistent node hosts (Render/Railway/VPS).
 function getDb() {
     if (!fs.existsSync(DB_FILE)) {
         return { users: [], chats: {} };
@@ -207,7 +206,15 @@ io.on('connection', (socket) => {
     });
 });
 
+// --- Server Startup ---
+
+// Export app for Vercel Serverless
+export default app;
+
+// Only listen on port if running locally (not in Vercel environment)
 const PORT = process.env.PORT || 3001;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+if (!process.env.VERCEL) {
+    server.listen(PORT, () => {
+        console.log(`Server running on port ${PORT}`);
+    });
+}
