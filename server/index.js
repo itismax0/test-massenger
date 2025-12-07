@@ -1,266 +1,228 @@
-import express from 'express';
-import { createServer } from 'http';
-import { Server } from 'socket.io';
-import fs from 'fs';
-import path from 'path';
-import cors from 'cors';
-import { fileURLToPath } from 'url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
-const httpServer = createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
+const server = http.createServer(app);
+
+// Use environment variable for allowed origin in production
+const ALLOWED_ORIGIN = process.env.CLIENT_URL || "http://localhost:3000";
+
+app.use(cors({
+    origin: "*", // Allow all for simplicity in this demo, strict in prod
     methods: ["GET", "POST"]
-  }
+}));
+app.use(express.json());
+
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
-const PORT = 3001;
 const DB_FILE = path.join(__dirname, 'data.json');
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
-
-// --- Database Helper ---
+// --- Database Helpers ---
 function getDb() {
-  if (!fs.existsSync(DB_FILE)) {
-    const initialData = { users: [], messages: [] };
-    fs.writeFileSync(DB_FILE, JSON.stringify(initialData, null, 2));
-    return initialData;
-  }
-  try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-  } catch (e) {
-    return { users: [], messages: [] };
-  }
+    if (!fs.existsSync(DB_FILE)) {
+        return { users: [], chats: {} };
+    }
+    try {
+        return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
+    } catch (e) {
+        return { users: [], chats: {} };
+    }
 }
 
 function saveDb(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
 }
 
-// --- REST API ---
+// --- Routes ---
+
+// Health check
+app.get('/', (req, res) => {
+    res.send('ZenChat Backend is Running');
+});
 
 // Register
 app.post('/api/register', (req, res) => {
-  try {
     const { name, email, password } = req.body;
     const db = getDb();
     
-    // Check if email exists
-    if (db.users.find(u => u.email.toLowerCase() === email.toLowerCase().trim())) {
-      return res.status(400).json({ error: 'Пользователь уже существует' });
+    if (db.users.find(u => u.email === email)) {
+        return res.status(400).json({ error: 'Email already exists' });
     }
 
     const newUser = {
-      id: (db.users.length + 1).toString(),
-      name: name.trim(),
-      email: email.trim(),
-      password: password, // In prod, hash this!
-      username: '',
-      avatarUrl: '',
-      contacts: [], // List of contact IDs
-      settings: {},
-      createdAt: Date.now()
+        id: Date.now().toString(),
+        name,
+        email,
+        password, // In prod, hash this!
+        username: '',
+        avatarUrl: ''
     };
 
     db.users.push(newUser);
     saveDb(db);
-    
-    // Return profile without password
-    const { password: _, ...profile } = newUser;
-    res.json(profile);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+
+    const { password: _, ...userProfile } = newUser;
+    res.json(userProfile);
 });
 
 // Login
 app.post('/api/login', (req, res) => {
-  try {
     const { email, password } = req.body;
     const db = getDb();
-    
-    const user = db.users.find(u => u.email.toLowerCase() === email.toLowerCase().trim());
-    
-    if (!user) return res.status(400).json({ error: 'Пользователь не найден' });
-    if (user.password !== password) return res.status(400).json({ error: 'Неверный пароль' });
 
-    const { password: _, ...profile } = user;
-    res.json(profile);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+    const user = db.users.find(u => u.email === email && u.password === password);
+    
+    if (!user) {
+        return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const { password: _, ...userProfile } = user;
+    res.json(userProfile);
 });
 
 // Update Profile
-app.post('/api/user/:id', (req, res) => {
-  try {
+app.post('/api/users/:id', (req, res) => {
     const { id } = req.params;
     const updates = req.body;
     const db = getDb();
-    
-    const index = db.users.findIndex(u => u.id === id);
-    if (index === -1) return res.status(404).json({ error: 'User not found' });
 
-    // Username uniqueness check
-    if (updates.username && updates.username !== db.users[index].username) {
-      if (db.users.find(u => u.username === updates.username && u.id !== id)) {
-         return res.status(400).json({ error: 'Имя пользователя занято' });
-      }
+    const userIndex = db.users.findIndex(u => u.id === id);
+    if (userIndex === -1) return res.status(404).json({ error: 'User not found' });
+
+    // Username uniqueness
+    if (updates.username) {
+        const taken = db.users.find(u => u.username === updates.username && u.id !== id);
+        if (taken) return res.status(400).json({ error: 'Username taken' });
     }
 
-    db.users[index] = { ...db.users[index], ...updates };
+    db.users[userIndex] = { ...db.users[userIndex], ...updates };
     saveDb(db);
-    
-    const { password: _, ...profile } = db.users[index];
-    res.json(profile);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+
+    const { password: _, ...userProfile } = db.users[userIndex];
+    res.json(userProfile);
 });
 
-// Search Users
+// Search
 app.get('/api/users/search', (req, res) => {
-  try {
     const { query, currentUserId } = req.query;
-    if (!query) return res.json([]);
-    
     const db = getDb();
-    const q = query.toLowerCase().replace('@', '');
     
+    if (!query) return res.json([]);
+
+    const lowerQ = query.toLowerCase();
     const results = db.users
-      .filter(u => u.id !== currentUserId)
-      .filter(u => u.name.toLowerCase().includes(q) || (u.username && u.username.toLowerCase().includes(q)))
-      .map(u => ({
-        id: u.id,
-        name: u.name,
-        email: u.email,
-        username: u.username,
-        avatarUrl: u.avatarUrl
-      }));
-      
+        .filter(u => u.id !== currentUserId && (u.name.toLowerCase().includes(lowerQ) || (u.username && u.username.toLowerCase().includes(lowerQ))))
+        .map(({ password, ...u }) => u);
+
     res.json(results);
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
-// Get User Data (Sync)
-app.get('/api/sync/:id', (req, res) => {
-  try {
-    const { id } = req.params;
+// Sync Data (Simple implementation)
+app.get('/api/sync/:userId', (req, res) => {
+    const { userId } = req.params;
     const db = getDb();
-    const user = db.users.find(u => u.id === id);
     
+    // In a real DB, you'd fetch relations properly
+    // Here we just mock the structure expected by frontend
+    const user = db.users.find(u => u.id === userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // Get Chat History
-    // Filter messages where user is sender OR receiver
-    const userMessages = db.messages.filter(m => m.senderId === id || m.recipientId === id);
+    // For this simple file DB, we aren't storing contacts relation persistently 
+    // effectively in a relational way, so we return basic profile.
+    // The frontend handles local contacts merging for this demo.
     
-    // Group by contact
-    const chatHistory = {};
-    const contacts = [];
-    const processedContactIds = new Set();
-
-    // 1. Add Gemimi defaults
-    // In a real app, Gemini history would also be saved in DB messages with recipientId='gemini-ai'
-    // For now we assume Gemini is local-only or stored similarly.
+    const { password: _, ...profile } = user;
     
-    // 2. Process real messages
-    userMessages.forEach(msg => {
-       const otherId = msg.senderId === id ? msg.recipientId : msg.senderId;
-       
-       if (!chatHistory[otherId]) chatHistory[otherId] = [];
-       chatHistory[otherId].push(msg);
-       
-       if (!processedContactIds.has(otherId) && otherId !== 'gemini-ai') {
-         processedContactIds.add(otherId);
-         const otherUser = db.users.find(u => u.id === otherId);
-         if (otherUser) {
-           contacts.push({
-             id: otherUser.id,
-             name: otherUser.name,
-             avatarUrl: otherUser.avatarUrl,
-             username: otherUser.username,
-             type: 'user',
-             isOnline: false // Socket will update this
-           });
-         }
-       }
-    });
-
-    // Populate lastMessage for contacts
-    const enrichedContacts = contacts.map(c => {
-       const msgs = chatHistory[c.id];
-       const lastMsg = msgs[msgs.length - 1];
-       return {
-         ...c,
-         lastMessage: lastMsg?.text || (lastMsg?.type === 'image' ? 'Фото' : 'Сообщение'),
-         lastMessageTime: lastMsg?.timestamp || Date.now(),
-         unreadCount: 0
-       };
-    });
-
     res.json({
-      profile: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        avatarUrl: user.avatarUrl,
-        username: user.username
-      },
-      contacts: enrichedContacts,
-      chatHistory: chatHistory,
-      settings: user.settings || {}
+        profile,
+        contacts: [], 
+        chatHistory: {},
+        settings: {}, // Frontend defaults
+        devices: []
     });
-
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
+// --- Socket.io (Realtime & Signaling) ---
 
-// --- Socket.IO ---
+const onlineUsers = new Map(); // userId -> socketId
 
 io.on('connection', (socket) => {
-  console.log('User connected:', socket.id);
+    console.log('User connected:', socket.id);
 
-  socket.on('join', (userId) => {
-    socket.join(userId);
-    console.log(`User ${userId} joined room`);
-    // Broadcast online status? (Optional for now)
-  });
+    socket.on('join', (userId) => {
+        onlineUsers.set(userId, socket.id);
+        socket.join(userId);
+        console.log(`User ${userId} joined room`);
+        io.emit('user_status', { userId, isOnline: true });
+    });
 
-  socket.on('send_message', (message) => {
-    // message: { id, text, senderId, recipientId, timestamp, type, ... }
-    const db = getDb();
-    
-    // Save to DB
-    // Ensure recipientId exists for persistence
-    if (!message.recipientId) return; 
+    socket.on('send_message', (data) => {
+        const { receiverId, message } = data;
+        
+        // Send to receiver
+        io.to(receiverId).emit('receive_message', message);
+        
+        // Send back to sender (confirm sent)
+        socket.emit('message_sent', { tempId: message.id, status: 'sent' });
+    });
 
-    db.messages.push(message);
-    saveDb(db);
-    
-    // Relay to recipient
-    io.to(message.recipientId).emit('receive_message', message);
-    
-    // Confirm to sender (optional, usually sender updates optimistic UI)
-    io.to(message.senderId).emit('message_sent', { tempId: message.id, status: 'sent' });
-    
-    console.log(`Message from ${message.senderId} to ${message.recipientId}`);
-  });
+    socket.on('typing', ({ to, from, isTyping }) => {
+        io.to(to).emit('typing', { from, isTyping });
+    });
 
-  socket.on('disconnect', () => {
-    console.log('User disconnected');
-  });
+    // --- WebRTC Signaling for Calls ---
+    
+    // 1. Initiator calls a user
+    socket.on("callUser", ({ userToCall, signalData, from, name }) => {
+        io.to(userToCall).emit("callUser", { 
+            signal: signalData, 
+            from, 
+            name 
+        });
+    });
+
+    // 2. Receiver answers
+    socket.on("answerCall", (data) => {
+        io.to(data.to).emit("callAccepted", data.signal);
+    });
+
+    // 3. ICE Candidates (Network path discovery)
+    socket.on("iceCandidate", ({ target, candidate }) => {
+        io.to(target).emit("iceCandidate", { candidate });
+    });
+
+    // 4. End Call
+    socket.on("endCall", ({ to }) => {
+        io.to(to).emit("callEnded");
+    });
+
+    socket.on('disconnect', () => {
+        let disconnectedUserId;
+        for (const [uid, sid] of onlineUsers.entries()) {
+            if (sid === socket.id) {
+                disconnectedUserId = uid;
+                onlineUsers.delete(uid);
+                break;
+            }
+        }
+        if (disconnectedUserId) {
+            io.emit('user_status', { userId: disconnectedUserId, isOnline: false });
+        }
+        console.log('User disconnected:', socket.id);
+    });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+const PORT = process.env.PORT || 3001;
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });

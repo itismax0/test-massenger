@@ -1,47 +1,120 @@
+
 import { io, Socket } from 'socket.io-client';
 import { Message } from '../types';
 
+// Use same URL logic as API
+const SOCKET_URL = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:3001';
+
 class SocketService {
-  private socket: Socket | null = null;
+    private socket: Socket | null = null;
+    private userId: string | null = null;
 
-  connect(userId: string) {
-    if (this.socket?.connected) return;
+    connect(userId: string) {
+        if (this.socket?.connected && this.userId === userId) return;
 
-    this.socket = io({
-      path: '/socket.io',
-      reconnectionAttempts: 5
-    });
+        this.userId = userId;
+        this.socket = io(SOCKET_URL, {
+            transports: ['websocket', 'polling'], // Try websocket first
+            reconnectionAttempts: 5
+        });
 
-    this.socket.on('connect', () => {
-      console.log('Socket connected');
-      this.socket?.emit('join', userId);
-    });
-  }
+        this.socket.on('connect', () => {
+            console.log('Connected to socket server');
+            this.socket?.emit('join', userId);
+        });
 
-  disconnect() {
-    if (this.socket) {
-      this.socket.disconnect();
-      this.socket = null;
+        this.socket.on('disconnect', () => {
+            console.log('Disconnected from socket server');
+        });
     }
-  }
 
-  sendMessage(message: Message & { recipientId: string }) {
-    if (this.socket) {
-      this.socket.emit('send_message', message);
+    disconnect() {
+        if (this.socket) {
+            this.socket.disconnect();
+            this.socket = null;
+        }
     }
-  }
 
-  onReceiveMessage(callback: (message: Message) => void) {
-    if (this.socket) {
-      this.socket.on('receive_message', callback);
+    sendMessage(message: Message, receiverId: string) {
+        if (this.socket) {
+            this.socket.emit('send_message', {
+                message,
+                receiverId
+            });
+        }
     }
-  }
-  
-  onMessageSent(callback: (data: { tempId: string, status: string }) => void) {
-      if (this.socket) {
-          this.socket.on('message_sent', callback);
-      }
-  }
+
+    sendTyping(receiverId: string, isTyping: boolean) {
+        if (this.socket) {
+            this.socket.emit('typing', {
+                to: receiverId,
+                from: this.userId,
+                isTyping
+            });
+        }
+    }
+
+    // --- WebRTC Signaling Methods ---
+
+    callUser(userToCall: string, signalData: any, name: string) {
+        if (this.socket) {
+            this.socket.emit("callUser", {
+                userToCall,
+                signalData,
+                from: this.userId,
+                name
+            });
+        }
+    }
+
+    answerCall(to: string, signal: any) {
+        if (this.socket) {
+            this.socket.emit("answerCall", { signal, to });
+        }
+    }
+
+    sendIceCandidate(target: string, candidate: any) {
+        if (this.socket) {
+            this.socket.emit("iceCandidate", { target, candidate });
+        }
+    }
+
+    endCall(to: string) {
+        if (this.socket) {
+            this.socket.emit("endCall", { to });
+        }
+    }
+
+    // --- Listeners ---
+
+    onMessage(callback: (msg: Message) => void) {
+        this.socket?.on('receive_message', callback);
+    }
+
+    onTyping(callback: (data: { from: string, isTyping: boolean }) => void) {
+        this.socket?.on('typing', callback);
+    }
+
+    onUserStatus(callback: (data: { userId: string, isOnline: boolean }) => void) {
+        this.socket?.on('user_status', callback);
+    }
+
+    // Call Listeners
+    onIncomingCall(callback: (data: { from: string, name: string, signal: any }) => void) {
+        this.socket?.on('callUser', callback);
+    }
+
+    onCallAccepted(callback: (signal: any) => void) {
+        this.socket?.on('callAccepted', callback);
+    }
+
+    onIceCandidate(callback: (data: { candidate: any }) => void) {
+        this.socket?.on('iceCandidate', callback);
+    }
+
+    onCallEnded(callback: () => void) {
+        this.socket?.on('callEnded', callback);
+    }
 }
 
 export const socketService = new SocketService();

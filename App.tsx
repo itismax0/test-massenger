@@ -1,5 +1,6 @@
+
 import React, { useState, useEffect, useCallback } from 'react';
-import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS } from './constants';
+import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS, CONTACTS } from './constants';
 import { Message, Contact, MessageType, AppSettings, DeviceSession, ContactType, UserProfile, UserData } from './types';
 import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
@@ -9,7 +10,6 @@ import AuthScreen from './components/AuthScreen';
 import ProfileInfo from './components/ProfileInfo';
 import { geminiService } from './services/geminiService';
 import { db } from './services/db';
-import { socketService } from './services/socketService';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -33,60 +33,29 @@ const App: React.FC = () => {
   const [isCreateChatOpen, setIsCreateChatOpen] = useState(false);
   const [createChatType, setCreateChatType] = useState<ContactType>('group');
 
-  // Load User Data Wrapper
-  const loadUserData = async (userId: string) => {
+  // Load User Data Helper
+  const loadUserData = (userId: string) => {
       try {
-          const data = await db.fetchUserData(userId);
+          const data = db.getData(userId);
           setUserProfile(data.profile);
           setContacts(data.contacts);
           setChatHistory(data.chatHistory);
           setSettings(data.settings);
           setDevices(data.devices);
           setIsAuthenticated(true);
-          
-          // Connect Socket
-          socketService.connect(userId);
       } catch (error) {
           console.error("Failed to load user data:", error);
+          // Safety fallback: logout to clear bad session state
           db.logout();
           setIsAuthenticated(false);
       }
   };
 
-  // Socket Listeners
-  useEffect(() => {
-    if (isAuthenticated && userProfile.id) {
-        socketService.onReceiveMessage((msg) => {
-            const contactId = msg.senderId;
-            
-            setChatHistory(prev => {
-                const currentMsgs = prev[contactId] || [];
-                // Prevent duplicates
-                if (currentMsgs.find(m => m.id === msg.id)) return prev;
-                return { ...prev, [contactId]: [...currentMsgs, msg] };
-            });
-
-            // Update contact last message
-            setContacts(prev => {
-                const exists = prev.find(c => c.id === contactId);
-                const previewText = msg.type === 'image' ? '📷 Фото' : (msg.type === 'voice' ? '🎤 Голосовое сообщение' : msg.text);
-                
-                if (exists) {
-                    return prev.map(c => c.id === contactId ? {
-                        ...c,
-                        lastMessage: previewText,
-                        lastMessageTime: msg.timestamp,
-                        unreadCount: activeContactId === contactId ? 0 : c.unreadCount + 1
-                    } : c);
-                } else {
-                    // New contact from incoming message (need to fetch details in real app)
-                    // For now, we wait for next refresh or simplistic add
-                    return prev; 
-                }
-            });
-        });
-    }
-  }, [isAuthenticated, userProfile.id, activeContactId]);
+  // Helper to persist state updates
+  const persistState = (overrides: Partial<UserData>) => {
+      if (!userProfile.id) return;
+      db.saveData(userProfile.id, overrides);
+  };
 
   // Check auth on mount
   useEffect(() => {
@@ -102,7 +71,6 @@ const App: React.FC = () => {
 
   const handleLogout = async () => {
       await db.logout();
-      socketService.disconnect();
       setIsAuthenticated(false);
       setActiveContactId(null);
   };
@@ -116,30 +84,43 @@ const App: React.FC = () => {
     }
   }, [settings.appearance.darkMode]);
 
+  // Auto-select first contact on desktop load
+  useEffect(() => {
+    if (isAuthenticated && !activeContactId && window.innerWidth >= 768 && contacts.length > 0) {
+        setActiveContactId(contacts[0].id);
+    }
+  }, [isAuthenticated, activeContactId, contacts]);
+
   const activeContact = contacts.find((c) => c.id === activeContactId);
   const activeMessages = activeContactId ? (chatHistory[activeContactId] || []) : [];
 
   const handleTerminateSessions = () => {
     const newDevices = devices.filter(d => d.isCurrent);
     setDevices(newDevices);
+    persistState({ devices: newDevices });
   };
 
+  // Update Settings Wrapper
   const handleUpdateSettings = (newSettings: AppSettings) => {
       setSettings(newSettings);
-      // db.saveSettings(newSettings); // TODO: Implement API
+      persistState({ settings: newSettings });
   };
 
+  // Update Profile Wrapper - Now Async to handle validation
   const handleUpdateProfile = async (newProfile: UserProfile) => {
       if (!userProfile.id) return;
+      // Use db.updateProfile to handle username uniqueness checks
       const updatedProfile = await db.updateProfile(userProfile.id, newProfile);
       setUserProfile(updatedProfile);
   };
 
+  // Search Users Handler
   const handleSearchUsers = async (query: string): Promise<UserProfile[]> => {
       if (!userProfile.id) return [];
       return await db.searchUsers(query, userProfile.id);
   };
 
+  // Add Found User to Contacts
   const handleAddContact = (profile: UserProfile) => {
       const existing = contacts.find(c => c.id === profile.id);
       if (existing) {
@@ -156,43 +137,62 @@ const App: React.FC = () => {
           unreadCount: 0,
           isOnline: false,
           type: 'user',
-          email: profile.username ? `@${profile.username}` : profile.email
+          email: profile.username ? `@${profile.username}` : profile.email // Store display handle
       };
 
-      setContacts([newContact, ...contacts]);
-      setChatHistory({ ...chatHistory, [profile.id]: [] });
+      const updatedContacts = [newContact, ...contacts];
+      const updatedHistory = { ...chatHistory, [profile.id]: [] };
+
+      setContacts(updatedContacts);
+      setChatHistory(updatedHistory);
       setActiveContactId(profile.id);
+      
+      persistState({ contacts: updatedContacts, chatHistory: updatedHistory });
   };
 
   const handleCreateChat = (name: string) => {
     const newId = Date.now().toString();
-    // ... same local logic for groups for now ...
+    const isGroup = createChatType === 'group';
+    
+    // Gemini acts as assistant for groups/channels
     const newContact: Contact = {
         id: newId,
         name: name,
-        avatarUrl: '',
-        lastMessage: 'Группа создана',
+        avatarUrl: '', // Use empty string to let Avatar component generate initials
+        lastMessage: isGroup ? 'Группа создана' : 'Канал создан',
         lastMessageTime: Date.now(),
         unreadCount: 0,
         isOnline: false,
         type: createChatType,
-        membersCount: 1
+        membersCount: 1,
+        systemInstruction: isGroup 
+            ? 'Ты — полезный ассистент и модератор в групповом чате. Отвечай кратко и помогай участникам.' 
+            : 'Ты — редактор канала. Помогай создавать интересные посты и отвечай на вопросы подписчиков.'
     };
-    setContacts([newContact, ...contacts]);
-    setChatHistory({ ...chatHistory, [newId]: [] });
+
+    const updatedContacts = [newContact, ...contacts];
+    const updatedHistory = { ...chatHistory, [newId]: [] };
+
+    setContacts(updatedContacts);
+    setChatHistory(updatedHistory);
     setActiveContactId(newId);
+
+    persistState({ contacts: updatedContacts, chatHistory: updatedHistory });
   };
 
   const handleSendMessage = useCallback(async (text: string, file?: File | null, type: MessageType = 'text', duration?: number) => {
     if (!activeContactId) return;
 
     const currentContactId = activeContactId;
+    const currentContact = contacts.find(c => c.id === currentContactId);
     
-    // Prepare attachment
+    // Prepare attachment data if exists
     let attachmentUrl = '';
     let base64Data = '';
     if (file) {
+        // Create a fake local URL for immediate display
         attachmentUrl = URL.createObjectURL(file);
+        // Convert to base64 for API
         base64Data = await new Promise<string>((resolve) => {
             const reader = new FileReader();
             reader.onload = (e) => resolve(e.target?.result as string);
@@ -203,40 +203,60 @@ const App: React.FC = () => {
     const newMessage: Message = {
       id: Date.now().toString(),
       text,
-      senderId: userProfile.id || CURRENT_USER_ID,
+      senderId: CURRENT_USER_ID,
       timestamp: Date.now(),
       status: 'sending',
       type: type,
-      attachmentUrl: attachmentUrl, // Use local blob for immediate display
+      attachmentUrl: attachmentUrl,
       fileName: file?.name,
       fileSize: file ? (file.size / 1024).toFixed(1) + ' КБ' : undefined,
       duration: duration
     };
 
-    // Optimistic Update
-    setChatHistory(prev => ({
-        ...prev,
-        [currentContactId]: [...(prev[currentContactId] || []), newMessage]
-    }));
+    // Update state
+    const updatedMessages = [...(chatHistory[currentContactId] || []), newMessage];
+    const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
+    setChatHistory(newHistory);
 
-    setContacts(prev => prev.map(c => c.id === currentContactId ? {
+    // Update last message preview
+    const previewText = type === 'image' ? '📷 Фото' : (type === 'file' ? '📄 Файл' : (type === 'voice' ? '🎤 Голосовое сообщение' : text));
+    const updatedContacts = contacts.map(c => c.id === currentContactId ? {
         ...c, 
-        lastMessage: type === 'text' ? text : (type === 'image' ? 'Фото' : 'Файл'), 
+        lastMessage: previewText, 
         lastMessageTime: Date.now() 
-    } : c));
+    } : c);
+    setContacts(updatedContacts);
 
-    // Send Logic
+    // Save to DB
+    persistState({ chatHistory: newHistory, contacts: updatedContacts });
+
+    // Simulate network delay
+    setTimeout(() => {
+        setChatHistory((prev) => {
+            const msgs = prev[currentContactId] || [];
+            return {
+                ...prev,
+                [currentContactId]: msgs.map(m => m.id === newMessage.id ? {...m, status: 'sent'} : m)
+            }
+        });
+    }, 500);
+
+    // AI Response Logic
+    // Only respond if it's the Gemini AI contact
     if (currentContactId === 'gemini-ai') {
-        // ... Gemini Logic (Keep existing) ...
         setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
+
         try {
             const responseText = await geminiService.sendMessage(
-                currentContactId, text, undefined, 
+                currentContactId, 
+                text, 
+                currentContact?.systemInstruction,
                 (type === 'image' || type === 'voice') ? base64Data : undefined,
                 file?.type
             );
+
             setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
-            
+
             const aiMessage: Message = {
                 id: (Date.now() + 1).toString(),
                 text: responseText,
@@ -245,34 +265,164 @@ const App: React.FC = () => {
                 status: 'read',
                 type: 'text'
             };
+
+            const historyWithAI = { 
+                ...newHistory, // use the history from before delay closure
+                [currentContactId]: [...updatedMessages, aiMessage] 
+            };
             
-            setChatHistory(prev => ({
-                ...prev,
-                [currentContactId]: [...(prev[currentContactId] || []), aiMessage]
-            }));
-        } catch (e) { console.error(e); }
-    } else {
-        // REAL USER MESSAGE via Socket
-        // We need to send the base64 data to server if it's a file
-        const socketMessage = { 
-            ...newMessage, 
-            recipientId: currentContactId,
-            attachmentUrl: base64Data || attachmentUrl // Send base64 to server
-        };
-        socketService.sendMessage(socketMessage);
+            // Re-update contacts for AI reply
+            const contactsWithAI = updatedContacts.map(c => c.id === currentContactId ? {
+                ...c, 
+                lastMessage: responseText, 
+                lastMessageTime: Date.now() 
+            } : c);
+
+            setChatHistory(historyWithAI);
+            setContacts(contactsWithAI);
+
+            persistState({ chatHistory: historyWithAI, contacts: contactsWithAI });
+
+        } catch (error) {
+            setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
+            console.error("Failed to get response", error);
+        }
     }
 
   }, [activeContactId, contacts, chatHistory, userProfile.id]);
 
-  // Keep other handlers (Sticker, Location) similar, just adding socket emit logic if needed
-  const handleSendLocation = useCallback((lat: number, lng: number) => {
-      if(!activeContactId) return;
-      // ... logic similar to text, but type='location'
-  }, [activeContactId]);
+  const handleSendLocation = useCallback(async (latitude: number, longitude: number) => {
+      if (!activeContactId) return;
+      const currentContactId = activeContactId;
+
+      const newMessage: Message = {
+          id: Date.now().toString(),
+          text: '',
+          senderId: CURRENT_USER_ID,
+          timestamp: Date.now(),
+          status: 'sent',
+          type: 'location',
+          latitude,
+          longitude
+      };
+
+      const updatedMessages = [...(chatHistory[currentContactId] || []), newMessage];
+      const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
+      
+      const updatedContacts = contacts.map(c => c.id === currentContactId ? {
+          ...c, 
+          lastMessage: '📍 Геолокация', 
+          lastMessageTime: Date.now() 
+      } : c);
+
+      setChatHistory(newHistory);
+      setContacts(updatedContacts);
+      persistState({ chatHistory: newHistory, contacts: updatedContacts });
+
+      // If engaging with Gemini, send the location to it so it can use Google Maps Grounding
+      if (currentContactId === 'gemini-ai') {
+        setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
+        try {
+            // Inform Gemini about the user's location using the text prompt and toolConfig
+            const responseText = await geminiService.sendMessage(
+                currentContactId, 
+                "Это моя текущая геолокация. Что находится рядом?", 
+                contacts.find(c => c.id === currentContactId)?.systemInstruction,
+                undefined,
+                undefined,
+                { latitude, longitude }
+            );
+
+            setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
+
+            const aiMessage: Message = {
+                id: (Date.now() + 1).toString(),
+                text: responseText,
+                senderId: currentContactId,
+                timestamp: Date.now(),
+                status: 'read',
+                type: 'text'
+            };
+
+            const historyWithAI = {
+                ...newHistory,
+                [currentContactId]: [...updatedMessages, aiMessage]
+            };
+            
+            setChatHistory(historyWithAI);
+            setContacts(updatedContacts.map(c => c.id === currentContactId ? {
+                ...c, 
+                lastMessage: responseText, 
+                lastMessageTime: Date.now() 
+            } : c));
+
+            persistState({ chatHistory: historyWithAI });
+
+        } catch(e) {
+             setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
+        }
+      }
+
+  }, [activeContactId, chatHistory, contacts, userProfile.id]);
 
   const handleSendSticker = useCallback((url: string) => {
-       // ... logic similar to text, but type='sticker'
-  }, [activeContactId]);
+      if (!activeContactId) return;
+      const currentContactId = activeContactId;
+
+      const newMessage: Message = {
+        id: Date.now().toString(),
+        text: '',
+        senderId: CURRENT_USER_ID,
+        timestamp: Date.now(),
+        status: 'read',
+        type: 'sticker',
+        attachmentUrl: url
+      };
+
+      const updatedMessages = [...(chatHistory[currentContactId] || []), newMessage];
+      const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
+      setChatHistory(newHistory);
+      persistState({ chatHistory: newHistory });
+
+      // Respond to sticker only if Gemini
+      if (currentContactId === 'gemini-ai') {
+        setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
+        
+        setTimeout(async () => {
+            try {
+                // Send a hidden prompt to Gemini representing the sticker
+                const responseText = await geminiService.sendMessage(
+                    currentContactId, 
+                    "[Пользователь отправил стикер]", 
+                    contacts.find(c => c.id === currentContactId)?.systemInstruction
+                );
+
+                setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
+
+                const aiMessage: Message = {
+                    id: (Date.now() + 1).toString(),
+                    text: responseText,
+                    senderId: currentContactId,
+                    timestamp: Date.now(),
+                    status: 'read',
+                    type: 'text'
+                };
+
+                const historyWithAI = {
+                    ...newHistory,
+                    [currentContactId]: [...updatedMessages, aiMessage]
+                };
+
+                setChatHistory(historyWithAI);
+                persistState({ chatHistory: historyWithAI });
+
+            } catch(e) {
+                setTypingStatus(prev => ({ ...prev, [currentContactId]: false }));
+            }
+        }, 1000);
+      }
+
+  }, [activeContactId, contacts, chatHistory, userProfile.id]);
 
   if (!isAuthenticated) {
       return <AuthScreen onLoginSuccess={handleLoginSuccess} />;
@@ -283,11 +433,16 @@ const App: React.FC = () => {
       <Sidebar
         contacts={contacts}
         activeContactId={activeContactId}
-        onSelectContact={setActiveContactId}
+        onSelectContact={(id) => {
+            setActiveContactId(id);
+        }}
         isOpenMobile={isMobileSidebarOpen}
         closeMobile={() => setIsMobileSidebarOpen(false)}
         onOpenSettings={() => setIsSettingsOpen(true)}
-        onCreateChat={(type) => { setCreateChatType(type); setIsCreateChatOpen(true); }}
+        onCreateChat={(type) => {
+            setCreateChatType(type);
+            setIsCreateChatOpen(true);
+        }}
         onSearchUsers={handleSearchUsers}
         onAddContact={handleAddContact}
       />
@@ -298,8 +453,8 @@ const App: React.FC = () => {
             contact={activeContact}
             messages={activeMessages}
             onSendMessage={handleSendMessage}
-            onSendSticker={(url) => { /* Implement similarly to handleSendMessage */ }}
-            onSendLocation={(lat, lng) => { /* Implement similarly */ }}
+            onSendSticker={handleSendSticker}
+            onSendLocation={handleSendLocation}
             isTyping={!!typingStatus[activeContact.id]}
             onBack={() => setIsMobileSidebarOpen(true)}
             appearance={settings.appearance}
@@ -307,7 +462,7 @@ const App: React.FC = () => {
           />
         ) : (
           <div className="hidden md:flex flex-1 items-center justify-center bg-[#f8fafc] dark:bg-slate-900 flex-col text-gray-400">
-             <div className="w-24 h-24 bg-gray-200 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
+            <div className="w-24 h-24 bg-gray-200 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
                 <span className="text-4xl">👋</span>
             </div>
             <p className="text-lg font-medium">Выберите чат для начала общения</p>
@@ -315,6 +470,7 @@ const App: React.FC = () => {
         )}
       </main>
 
+      {/* Settings Modal */}
       <SettingsModal 
         isOpen={isSettingsOpen} 
         onClose={() => setIsSettingsOpen(false)}
@@ -327,6 +483,7 @@ const App: React.FC = () => {
         onLogout={handleLogout}
       />
 
+      {/* Create Chat Modal */}
       <CreateChatModal 
         isOpen={isCreateChatOpen}
         onClose={() => setIsCreateChatOpen(false)}
@@ -334,6 +491,7 @@ const App: React.FC = () => {
         type={createChatType}
       />
 
+      {/* Profile Info Modal */}
       {activeContact && (
         <ProfileInfo 
             isOpen={isProfileInfoOpen}
