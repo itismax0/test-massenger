@@ -1,8 +1,9 @@
 
-// Determine API URL:
-// If VITE_API_URL is set (prod), use it.
-// Otherwise, use empty string to allow Vite proxy to handle routing to localhost:3001
-const API_URL = (import.meta as any).env?.VITE_API_URL || '';
+// On Render, Frontend and Backend are on the same domain.
+// Use relative path '/api' so it works automatically.
+// For local dev, Vite proxy handles '/api' -> 'localhost:3001'
+
+const API_URL = ''; // Relative path is best for unified deployment
 
 // Helper to handle requests
 const request = async (endpoint: string, options: RequestInit = {}) => {
@@ -15,7 +16,7 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
 
         // Add timeout
         const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        const id = setTimeout(() => controller.abort(), 15000); // 15s timeout for cold starts
 
         const response = await fetch(url, { 
             ...options, 
@@ -32,9 +33,8 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
         try {
             data = JSON.parse(text);
         } catch (e) {
-            // If parsing fails, it's likely an HTML error page (404/500)
             console.error("Server returned non-JSON response:", text.substring(0, 200));
-            throw new Error(`Server Error: ${response.status} ${response.statusText}. The backend might be offline or returning HTML.`);
+            throw new Error(`Server Error: The backend might be offline or returning HTML.`);
         }
 
         if (!response.ok) {
@@ -44,7 +44,7 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
         return data;
     } catch (error: any) {
         if (error.name === 'AbortError') {
-            throw new Error('Connection timeout. Server is slow or offline.');
+            throw new Error('Connection timeout. The server might be waking up (Render free tier). Please try again in 30 seconds.');
         }
         console.error(`API Error (${endpoint}):`, error);
         throw error;
