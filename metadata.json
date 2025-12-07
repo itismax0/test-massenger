@@ -1,0 +1,7 @@
+{
+  "name": "Copy of Test massager",
+  "description": "Минималистичный мессенджер в стиле Telegram, работающий на базе Gemini. Наслаждайтесь общением без отвлекающих факторов.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
