@@ -1,113 +1,46 @@
 
+import { api } from './api';
 import { AppSettings, Contact, Message, UserData, UserProfile, DeviceSession } from '../types';
 import { CONTACTS, INITIAL_SETTINGS, INITIAL_DEVICES } from '../constants';
 
-const USERS_KEY = 'zenchat_users';
 const DATA_PREFIX = 'zenchat_data_';
 const SESSION_KEY = 'zenchat_session';
 
-interface StoredUser {
-    id: string;
-    email: string;
-    password: string; // In a real app, this would be hashed
-    name: string;
-    username?: string;
-}
-
-// Helper to simulate network delay
-const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
-
 export const db = {
-    // --- Auth ---
+    // --- Auth (Remote) ---
 
     async register(name: string, email: string, password: string): Promise<UserProfile> {
-        await delay(800); // Simulate server request
-
-        const safeEmail = email.trim();
-        let users: StoredUser[] = [];
+        // Call the backend API
+        const profile = await api.register(name, email, password);
         
-        try {
-            const usersRaw = localStorage.getItem(USERS_KEY);
-            users = usersRaw ? JSON.parse(usersRaw) : [];
-        } catch (e) {
-            console.error("Error parsing users, resetting:", e);
-            users = [];
-        }
-
-        // Check if user exists (case-insensitive and trimmed)
-        if (users.find(u => u.email.trim().toLowerCase() === safeEmail.toLowerCase())) {
-            throw new Error('Пользователь с таким email уже существует');
-        }
-
-        // Generate sequential ID (1, 2, 3...)
-        const newId = (users.length + 1).toString();
-
-        const newUser: StoredUser = {
-            id: newId,
-            email: safeEmail,
-            password: password, // Store password (should be hashed in prod)
-            name: name.trim(),
-            username: ''
-        };
-
-        users.push(newUser);
-        localStorage.setItem(USERS_KEY, JSON.stringify(users));
+        // Save session ID locally
+        localStorage.setItem(SESSION_KEY, profile.id);
         
-        console.log('User registered:', newUser.email, 'ID:', newUser.id);
-
-        // Initialize default data for new user
-        const initialData = this._getDefaultData(newUser.id, newUser.name, newUser.email);
-
-        localStorage.setItem(DATA_PREFIX + newUser.id, JSON.stringify(initialData));
+        // Initialize local cache for this user
+        this._initLocalCache(profile.id, profile);
         
-        // Set session
-        localStorage.setItem(SESSION_KEY, newUser.id);
-
-        return initialData.profile;
+        return profile;
     },
 
     async login(email: string, password: string): Promise<UserProfile> {
-        await delay(800);
-
-        const safeEmail = email.trim();
-        let users: StoredUser[] = [];
+        // Call the backend API
+        const profile = await api.login(email, password);
         
+        localStorage.setItem(SESSION_KEY, profile.id);
+        
+        // Sync latest data from server
         try {
-            const usersRaw = localStorage.getItem(USERS_KEY);
-            users = usersRaw ? JSON.parse(usersRaw) : [];
+            await this.syncWithServer(profile.id);
         } catch (e) {
-            console.error("Error parsing users:", e);
-            users = [];
+            console.error("Initial sync failed", e);
         }
 
-        console.log('Attempting login for:', safeEmail);
-
-        // Find user by email first
-        const user = users.find(u => 
-            u.email.trim().toLowerCase() === safeEmail.toLowerCase()
-        );
-
-        if (!user) {
-            throw new Error('Пользователь с таким email не найден');
-        }
-
-        // Check password (try exact match, then trimmed match for mobile/legacy issues)
-        const isPasswordValid = user.password === password || (user.password && user.password.trim() === password.trim());
-
-        if (!isPasswordValid) {
-            throw new Error('Неверный пароль');
-        }
-
-        localStorage.setItem(SESSION_KEY, user.id);
-        
-        // Return profile (fetch fresh from data in case name changed)
-        const data = this.getData(user.id);
-        return data.profile;
+        return profile;
     },
 
     async logout() {
-        await delay(300);
         localStorage.removeItem(SESSION_KEY);
+        // Optional: Call api.logout() if you implement server-side session clearing
     },
 
     checkSession(): string | null {
@@ -117,93 +50,43 @@ export const db = {
     // --- Data Management ---
 
     async updateProfile(userId: string, updates: Partial<UserProfile>): Promise<UserProfile> {
-        await delay(500);
+        // update on server
+        const updatedProfile = await api.updateProfile(userId, updates);
         
-        const usersRaw = localStorage.getItem(USERS_KEY);
-        let users: StoredUser[] = usersRaw ? JSON.parse(usersRaw) : [];
-        
-        const userIndex = users.findIndex(u => u.id === userId);
-        if (userIndex === -1) throw new Error('User not found');
-        
-        const currentUser = users[userIndex];
-
-        // Check username uniqueness if changing
-        if (updates.username && updates.username !== currentUser.username) {
-            const safeUsername = updates.username.trim().toLowerCase();
-            // Validations
-            if (safeUsername.length < 5) throw new Error('Имя пользователя должно быть не короче 5 символов');
-            if (!/^[a-zA-Z0-9_]+$/.test(safeUsername)) throw new Error('Можно использовать только латинские буквы, цифры и подчеркивания');
-
-            const usernameTaken = users.some(u => 
-                u.username?.trim().toLowerCase() === safeUsername && u.id !== userId
-            );
-            if (usernameTaken) {
-                throw new Error('Это имя пользователя уже занято');
-            }
-        }
-
-        // Update master list
-        const updatedStoredUser = { ...currentUser, ...updates };
-        // Ensure we save the specific fields needed in stored user
-        if (updates.name) updatedStoredUser.name = updates.name;
-        if (updates.username) updatedStoredUser.username = updates.username;
-
-        users[userIndex] = updatedStoredUser;
-        localStorage.setItem(USERS_KEY, JSON.stringify(users));
-
-        // Update individual data blob
+        // update local cache
         const userData = this.getData(userId);
-        userData.profile = { ...userData.profile, ...updates };
+        userData.profile = updatedProfile;
         this.saveData(userId, userData);
 
-        return userData.profile;
+        return updatedProfile;
     },
 
-    // Global Search for users
     async searchUsers(query: string, currentUserId: string): Promise<UserProfile[]> {
-        await delay(400); // Simulate network latency
-
-        if (!query || query.length < 3) return [];
-
-        const cleanQuery = query.toLowerCase().replace('@', '');
-        
-        let users: StoredUser[] = [];
-        try {
-            const usersRaw = localStorage.getItem(USERS_KEY);
-            users = usersRaw ? JSON.parse(usersRaw) : [];
-        } catch (e) { return []; }
-
-        // Filter users
-        const matches = users.filter(u => {
-            // Don't show myself
-            if (u.id === currentUserId) return false;
-
-            const nameMatch = u.name.toLowerCase().includes(cleanQuery);
-            const usernameMatch = u.username && u.username.toLowerCase().includes(cleanQuery);
-            
-            return nameMatch || usernameMatch;
-        });
-
-        // Map to Safe UserProfile (no passwords)
-        return matches.map(u => ({
-            id: u.id,
-            name: u.name,
-            email: u.email,
-            username: u.username,
-            // Try to get avatar from their specific data block if possible
-            avatarUrl: this._getUserAvatar(u.id) 
-        }));
+        return await api.searchUsers(query, currentUserId);
     },
 
-    _getUserAvatar(userId: string): string {
+    // --- Sync & Local Cache ---
+    
+    // We keep a local copy of data for speed/offline, but sync with server on load
+    async syncWithServer(userId: string) {
         try {
-            const raw = localStorage.getItem(DATA_PREFIX + userId);
-            if (raw) {
-                const data = JSON.parse(raw);
-                return data.profile?.avatarUrl || '';
-            }
-        } catch (e) {}
-        return '';
+            const serverData = await api.syncData(userId);
+            
+            // Merge server profile with local data
+            const localData = this.getData(userId);
+            
+            const mergedData: UserData = {
+                ...localData,
+                profile: serverData.profile || localData.profile,
+                // In a real app, you would merge contacts/chats carefully here.
+                // For now, we trust local for chats/settings to keep it simple,
+                // or you could trust server if you implement full cloud storage.
+            };
+            
+            this.saveData(userId, mergedData);
+        } catch (e) {
+            console.warn("Sync failed, using local data", e);
+        }
     },
 
     getData(userId: string): UserData {
@@ -214,7 +97,6 @@ export const db = {
         try {
             return JSON.parse(raw);
         } catch (e) {
-            console.error("Failed to parse user data, resetting:", e);
             return this._getDefaultData(userId);
         }
     },
@@ -225,30 +107,26 @@ export const db = {
             const updated = { ...current, ...data };
             localStorage.setItem(DATA_PREFIX + userId, JSON.stringify(updated));
         } catch (e) {
-            console.error("Failed to save data:", e);
+            console.error("Failed to save local data:", e);
         }
     },
 
-    // Internal Helper for default data structure
-    _getDefaultData(userId: string, name: string = 'User', email: string = ''): UserData {
-        // Try to find username from stored users if possible
-        let username = '';
-        try {
-             const usersRaw = localStorage.getItem(USERS_KEY);
-             const users: StoredUser[] = usersRaw ? JSON.parse(usersRaw) : [];
-             const u = users.find(user => user.id === userId);
-             if (u && u.username) username = u.username;
-        } catch (e) {}
+    _initLocalCache(userId: string, profile: UserProfile) {
+        const initialData = this._getDefaultData(userId);
+        initialData.profile = profile;
+        localStorage.setItem(DATA_PREFIX + userId, JSON.stringify(initialData));
+    },
 
+    _getDefaultData(userId: string): UserData {
          const initialData: UserData = {
-            profile: { id: userId, name: name, email: email, avatarUrl: '', username: username },
-            contacts: CONTACTS, // Start with Gemini
-            chatHistory: {}, // Empty chats
+            profile: { id: userId, name: '', email: '', avatarUrl: '' },
+            contacts: CONTACTS, 
+            chatHistory: {},
             settings: INITIAL_SETTINGS,
             devices: INITIAL_DEVICES
         };
         
-        // Initialize chat history for default contacts
+        // Init default chats
         CONTACTS.forEach(c => {
              initialData.chatHistory[c.id] = [
                 {

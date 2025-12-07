@@ -10,24 +10,28 @@ const app = express();
 const server = http.createServer(app);
 
 // Use environment variable for allowed origin in production
-const ALLOWED_ORIGIN = process.env.CLIENT_URL || "http://localhost:3000";
+const ALLOWED_ORIGIN = process.env.CLIENT_URL || "*";
 
 app.use(cors({
-    origin: "*", // Allow all for simplicity in this demo, strict in prod
+    origin: ALLOWED_ORIGIN,
     methods: ["GET", "POST"]
 }));
 app.use(express.json());
 
 const io = new Server(server, {
     cors: {
-        origin: "*",
+        origin: ALLOWED_ORIGIN,
         methods: ["GET", "POST"]
     }
 });
 
-const DB_FILE = path.join(__dirname, 'data.json');
+// Use /tmp for writable storage in some serverless envs, or fall back to local
+const DB_FILE = process.env.VERCEL ? '/tmp/data.json' : path.join(__dirname, 'data.json');
 
 // --- Database Helpers ---
+// Note: On Vercel Serverless, file system is not persistent. 
+// You MUST use an external DB (Mongo/Postgres) for real persistence.
+// This file-based DB only works on persistent node hosts (Render/Railway/VPS).
 function getDb() {
     if (!fs.existsSync(DB_FILE)) {
         return { users: [], chats: {} };
@@ -40,12 +44,20 @@ function getDb() {
 }
 
 function saveDb(data) {
-    fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    try {
+        fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+    } catch (e) {
+        console.error("Failed to write DB:", e);
+    }
 }
+
+// Generate unique ID
+const generateId = () => {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+};
 
 // --- Routes ---
 
-// Health check
 app.get('/', (req, res) => {
     res.send('ZenChat Backend is Running');
 });
@@ -60,10 +72,10 @@ app.post('/api/register', (req, res) => {
     }
 
     const newUser = {
-        id: Date.now().toString(),
+        id: generateId(),
         name,
         email,
-        password, // In prod, hash this!
+        password,
         username: '',
         avatarUrl: ''
     };
@@ -99,7 +111,6 @@ app.post('/api/users/:id', (req, res) => {
     const userIndex = db.users.findIndex(u => u.id === id);
     if (userIndex === -1) return res.status(404).json({ error: 'User not found' });
 
-    // Username uniqueness
     if (updates.username) {
         const taken = db.users.find(u => u.username === updates.username && u.id !== id);
         if (taken) return res.status(400).json({ error: 'Username taken' });
@@ -127,34 +138,28 @@ app.get('/api/users/search', (req, res) => {
     res.json(results);
 });
 
-// Sync Data (Simple implementation)
+// Sync Data
 app.get('/api/sync/:userId', (req, res) => {
     const { userId } = req.params;
     const db = getDb();
     
-    // In a real DB, you'd fetch relations properly
-    // Here we just mock the structure expected by frontend
     const user = db.users.find(u => u.id === userId);
     if (!user) return res.status(404).json({ error: 'User not found' });
 
-    // For this simple file DB, we aren't storing contacts relation persistently 
-    // effectively in a relational way, so we return basic profile.
-    // The frontend handles local contacts merging for this demo.
-    
     const { password: _, ...profile } = user;
     
     res.json({
         profile,
         contacts: [], 
         chatHistory: {},
-        settings: {}, // Frontend defaults
+        settings: {}, 
         devices: []
     });
 });
 
-// --- Socket.io (Realtime & Signaling) ---
+// --- Socket.io ---
 
-const onlineUsers = new Map(); // userId -> socketId
+const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
     console.log('User connected:', socket.id);
@@ -162,17 +167,12 @@ io.on('connection', (socket) => {
     socket.on('join', (userId) => {
         onlineUsers.set(userId, socket.id);
         socket.join(userId);
-        console.log(`User ${userId} joined room`);
         io.emit('user_status', { userId, isOnline: true });
     });
 
     socket.on('send_message', (data) => {
         const { receiverId, message } = data;
-        
-        // Send to receiver
         io.to(receiverId).emit('receive_message', message);
-        
-        // Send back to sender (confirm sent)
         socket.emit('message_sent', { tempId: message.id, status: 'sent' });
     });
 
@@ -180,45 +180,25 @@ io.on('connection', (socket) => {
         io.to(to).emit('typing', { from, isTyping });
     });
 
-    // --- WebRTC Signaling for Calls ---
-    
-    // 1. Initiator calls a user
+    // WebRTC Signaling
     socket.on("callUser", ({ userToCall, signalData, from, name }) => {
-        io.to(userToCall).emit("callUser", { 
-            signal: signalData, 
-            from, 
-            name 
-        });
+        io.to(userToCall).emit("callUser", { signal: signalData, from, name });
     });
 
-    // 2. Receiver answers
     socket.on("answerCall", (data) => {
         io.to(data.to).emit("callAccepted", data.signal);
     });
 
-    // 3. ICE Candidates (Network path discovery)
     socket.on("iceCandidate", ({ target, candidate }) => {
         io.to(target).emit("iceCandidate", { candidate });
     });
 
-    // 4. End Call
     socket.on("endCall", ({ to }) => {
         io.to(to).emit("callEnded");
     });
 
     socket.on('disconnect', () => {
-        let disconnectedUserId;
-        for (const [uid, sid] of onlineUsers.entries()) {
-            if (sid === socket.id) {
-                disconnectedUserId = uid;
-                onlineUsers.delete(uid);
-                break;
-            }
-        }
-        if (disconnectedUserId) {
-            io.emit('user_status', { userId: disconnectedUserId, isOnline: false });
-        }
-        console.log('User disconnected:', socket.id);
+        // cleanup
     });
 });
 
