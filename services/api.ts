@@ -1,8 +1,8 @@
 
 // Determine API URL:
 // If VITE_API_URL is set (prod), use it.
-// Otherwise, assume local dev server.
-const API_URL = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:3001';
+// Otherwise, use empty string to allow Vite proxy to handle routing to localhost:3001
+const API_URL = (import.meta as any).env?.VITE_API_URL || '';
 
 // Helper to handle requests
 const request = async (endpoint: string, options: RequestInit = {}) => {
@@ -15,7 +15,7 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
 
         // Add timeout
         const controller = new AbortController();
-        const id = setTimeout(() => controller.abort(), 8000); // 8s timeout
+        const id = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
         const response = await fetch(url, { 
             ...options, 
@@ -25,12 +25,17 @@ const request = async (endpoint: string, options: RequestInit = {}) => {
         
         clearTimeout(id);
 
-        const contentType = response.headers.get("content-type");
-        if (!contentType || !contentType.includes("application/json")) {
-            throw new Error("Server Error: Received HTML instead of JSON. Backend might be offline.");
-        }
+        const text = await response.text();
 
-        const data = await response.json();
+        // Try to parse JSON
+        let data;
+        try {
+            data = JSON.parse(text);
+        } catch (e) {
+            // If parsing fails, it's likely an HTML error page (404/500)
+            console.error("Server returned non-JSON response:", text.substring(0, 200));
+            throw new Error(`Server Error: ${response.status} ${response.statusText}. The backend might be offline or returning HTML.`);
+        }
 
         if (!response.ok) {
             throw new Error(data.error || 'API Request failed');

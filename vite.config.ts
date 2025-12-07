@@ -14,8 +14,6 @@ export default defineConfig(({ mode }) => {
       server: {
         port: 3000,
         host: '0.0.0.0',
-        // Proxy is no longer strictly needed if we use absolute URLs 
-        // via VITE_API_URL, but keeping it for simple local dev doesn't hurt.
         proxy: {
             '/api': {
                 target: 'http://127.0.0.1:3001',
