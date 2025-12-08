@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS, CONTACTS, SAVED_MESSAGES_ID, SAVED_MESSAGES_CONTACT } from './constants';
 import { Message, Contact, MessageType, AppSettings, DeviceSession, ContactType, UserProfile, UserData } from './types';
@@ -30,10 +29,15 @@ declare global {
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   
-  // Data State
+  // Data State - Initialize with fallback to prevent undefined errors
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [chatHistory, setChatHistory] = useState<Record<string, Message[]>>({});
-  const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS);
+  const [settings, setSettings] = useState<AppSettings>(INITIAL_SETTINGS || {
+    notifications: { show: true, preview: true, sound: true, chatSounds: true, vibration: false },
+    privacy: { email: 'Мои контакты', lastSeen: 'Все', profilePhoto: 'Все', passcode: false, twoFactor: true },
+    appearance: { darkMode: false, chatBackground: 'default', textSize: 100 },
+    language: 'Русский'
+  });
   const [devices, setDevices] = useState<DeviceSession[]>(INITIAL_DEVICES);
   const [userProfile, setUserProfile] = useState<UserProfile>({
       id: '', name: '', email: '', avatarUrl: ''
@@ -55,7 +59,6 @@ const App: React.FC = () => {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [isMuted, setIsMuted] = useState(false);
-  // Video state removed since calls are audio-only
   
   // Ref changed from RTCPeerConnection to SimplePeerInstance
   const connectionRef = useRef<SimplePeerInstance | null>(null);
@@ -88,6 +91,8 @@ const App: React.FC = () => {
 
           setContacts(loadedContacts);
           setChatHistory(data.chatHistory || {});
+          
+          // Use safe fallback for settings
           setSettings(data.settings || INITIAL_SETTINGS);
           setDevices(data.devices || INITIAL_DEVICES);
           setIsAuthenticated(true);
@@ -136,6 +141,8 @@ const App: React.FC = () => {
             const currentHistory = chatHistoryRef.current;
             const currentContacts = contactsRef.current;
             
+            // For now, simpler approach: just re-sync and reload. 
+            // In a larger app, you'd optimistically update state here.
             db.syncWithServer(userProfileRef.current.id).then(() => {
                 loadUserData(userProfileRef.current.id);
             });
@@ -337,19 +344,24 @@ const App: React.FC = () => {
       setContacts([]);
   };
 
+  // Safe check for settings existence
   useEffect(() => {
-    // Check if settings.appearance exists before accessing darkMode
-    const isDark = settings?.appearance?.darkMode || false;
+    // Defensive check: ensure settings and appearance exist
+    const isDark = settings?.appearance?.darkMode ?? false;
     if (isDark) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
-  }, [settings?.appearance?.darkMode]); // Use optional chaining in dependency array too
+  }, [settings?.appearance?.darkMode]);
 
   useEffect(() => {
     if (isAuthenticated && !activeContactId && window.innerWidth >= 768 && contacts.length > 0) {
-        setActiveContactId(contacts[0].id);
+        // Only select if contact has ID
+        const first = contacts.find(c => c && c.id);
+        if (first) {
+            setActiveContactId(first.id);
+        }
     }
   }, [isAuthenticated, activeContactId, contacts]);
 
@@ -668,7 +680,7 @@ const App: React.FC = () => {
             onSendLocation={handleSendLocation}
             isTyping={!!typingStatus[activeContact.id]}
             onBack={() => setIsMobileSidebarOpen(true)}
-            appearance={settings.appearance}
+            appearance={settings?.appearance}
             onOpenProfile={() => setIsProfileInfoOpen(true)}
             onCall={startCall}
             currentUserId={userProfile.id}

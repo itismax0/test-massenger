@@ -1,6 +1,5 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { AlertTriangle, Trash2 } from 'lucide-react';
-import { db } from '../services/db';
 
 interface Props {
   children: ReactNode;
@@ -12,10 +11,13 @@ interface State {
 }
 
 class ErrorBoundary extends Component<Props, State> {
-  public state: State = {
-    hasError: false,
-    error: null
-  };
+  constructor(props: Props) {
+    super(props);
+    this.state = {
+      hasError: false,
+      error: null
+    };
+  }
 
   public static getDerivedStateFromError(error: Error): State {
     return { hasError: true, error };
@@ -26,9 +28,16 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   private handleReset = () => {
-    // Aggressively clear all data to fix the white screen loop
-    db.clearAllData();
-    window.location.reload();
+    // Aggressively clear all data using native API to avoid dependency issues
+    try {
+        localStorage.clear();
+        sessionStorage.clear();
+        // Force reload without cache
+        window.location.reload();
+    } catch (e) {
+        console.error("Failed to clear storage", e);
+        window.location.href = '/';
+    }
   };
 
   public render() {
@@ -42,10 +51,10 @@ class ErrorBoundary extends Component<Props, State> {
             
             <h1 className="text-2xl font-bold mb-2">Что-то пошло не так</h1>
             <p className="text-gray-500 dark:text-gray-400 mb-6 text-sm">
-              Приложение столкнулось с критической ошибкой. Это могло произойти из-за поврежденных данных в кэше браузера.
+              Приложение столкнулось с критической ошибкой.
             </p>
 
-            <div className="bg-gray-100 dark:bg-slate-900 p-3 rounded-lg text-xs font-mono text-left mb-6 overflow-x-auto text-red-500">
+            <div className="bg-gray-100 dark:bg-slate-900 p-3 rounded-lg text-xs font-mono text-left mb-6 overflow-x-auto text-red-500 max-h-32">
               {this.state.error?.toString() || "Unknown Error"}
             </div>
 
@@ -58,7 +67,7 @@ class ErrorBoundary extends Component<Props, State> {
             </button>
             
             <p className="mt-4 text-xs text-gray-400">
-              Это действие очистит локальные настройки и кэш, но ваши сообщения сохранятся на сервере (если вы вошли в аккаунт).
+              Это действие очистит локальные настройки и кэш.
             </p>
           </div>
         </div>

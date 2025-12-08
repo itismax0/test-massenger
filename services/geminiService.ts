@@ -3,20 +3,30 @@ import { GEMINI_MODEL } from '../constants';
 
 // Singleton to manage chat sessions
 class GeminiService {
-  private ai: GoogleGenAI;
+  private ai: GoogleGenAI | null = null;
   private chatSessions: Map<string, Chat>;
 
   constructor() {
-    // API key must be obtained exclusively from process.env.API_KEY
-    // and used directly in initialization.
-    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     this.chatSessions = new Map();
+    // Do not initialize GoogleGenAI here immediately to prevent startup crashes
+    // if process.env.API_KEY is undefined or invalid.
+  }
+
+  private getAI(): GoogleGenAI {
+      if (!this.ai) {
+          const apiKey = process.env.API_KEY || ''; 
+          // We provide a fallback empty string to prevent constructor crash, 
+          // though API calls will fail gracefully later if key is missing.
+          this.ai = new GoogleGenAI({ apiKey });
+      }
+      return this.ai;
   }
 
   // Get or create a chat session for a specific contact
   private getChatSession(contactId: string, systemInstruction?: string): Chat {
     if (!this.chatSessions.has(contactId)) {
-      const chat = this.ai.chats.create({
+      const ai = this.getAI();
+      const chat = ai.chats.create({
         model: GEMINI_MODEL,
         config: {
           systemInstruction: systemInstruction,
@@ -43,7 +53,6 @@ class GeminiService {
       
       if (mediaBase64) {
         // Handle data URL stripping more generically
-        // data:image/jpeg;base64,..... or data:audio/webm;base64,.....
         const base64Data = mediaBase64.includes(',') 
             ? mediaBase64.split(',')[1] 
             : mediaBase64;
@@ -114,13 +123,14 @@ class GeminiService {
       return responseText;
     } catch (error) {
       console.error("Gemini API Error:", error);
-      return "У меня возникли проблемы с подключением. Пожалуйста, попробуйте позже.";
+      return "У меня возникли проблемы с подключением. Проверьте API ключ или интернет соединение.";
     }
   }
 
   // Helper to re-initialize if needed (e.g. key change)
   reset() {
     this.chatSessions.clear();
+    this.ai = null;
   }
 }
 
