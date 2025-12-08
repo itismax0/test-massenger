@@ -64,6 +64,11 @@ export const db = {
         return localStorage.getItem(SESSION_KEY);
     },
 
+    // Added for ErrorBoundary to allow full reset
+    clearAllData() {
+        localStorage.clear();
+    },
+
     // --- Data Management ---
 
     async updateProfile(userId: string, updates: Partial<UserProfile>): Promise<UserProfile> {
@@ -141,13 +146,14 @@ export const db = {
     },
 
     getData(userId: string): UserData {
-        const raw = localStorage.getItem(DATA_PREFIX + userId);
         const defaultData = this._getDefaultData(userId);
-
-        if (!raw) {
-            return defaultData;
-        }
+        
         try {
+            const raw = localStorage.getItem(DATA_PREFIX + userId);
+            if (!raw) {
+                return defaultData;
+            }
+
             const parsed = JSON.parse(raw);
             
             // Validate Profile

@@ -37,11 +37,14 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [isSearching, setIsSearching] = useState(false);
 
   // Safely filter local contacts ensuring they exist and have a name
+  // Use optional chaining (?.) and fallback checks to prevent crashes if data is corrupted
   const safeContacts = Array.isArray(contacts) ? contacts : [];
-  const filteredContacts = safeContacts.filter((c) =>
-    (c && c.name && c.name.toLowerCase().includes(searchTerm.toLowerCase())) || 
-    (c && c.type === 'user' && c.description?.toLowerCase().includes(searchTerm.toLowerCase()))
-  );
+  const filteredContacts = safeContacts.filter((c) => {
+    if (!c) return false;
+    const nameMatch = c.name?.toLowerCase?.()?.includes(searchTerm.toLowerCase());
+    const descMatch = c.type === 'user' && c.description?.toLowerCase?.()?.includes(searchTerm.toLowerCase());
+    return nameMatch || descMatch;
+  });
 
   // Debounced Global Search
   useEffect(() => {
@@ -168,7 +171,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 <h3 className={`text-sm font-medium truncate flex items-center gap-1 ${activeContactId === contact.id ? 'text-blue-900 dark:text-blue-300' : 'text-slate-800 dark:text-white'}`}>
                   {contact.type === 'channel' && <Megaphone size={12} className="text-orange-500" />}
                   {contact.type === 'group' && <Users size={12} className="text-blue-500" />}
-                  {contact.name}
+                  {contact.name || 'Без имени'}
                 </h3>
                 {contact.lastMessageTime && (
                   <span className="text-xs text-gray-400">
