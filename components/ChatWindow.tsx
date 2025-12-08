@@ -5,7 +5,7 @@ import { Send, Paperclip, Smile, MoreVertical, Phone, ArrowLeft, Image as ImageI
 import MessageBubble from './MessageBubble';
 import Avatar from './Avatar';
 import EmojiPicker from './EmojiPicker';
-import CallOverlay from './CallOverlay';
+// CallOverlay moved to App level
 import EncryptionModal from './EncryptionModal';
 
 interface ChatWindowProps {
@@ -15,9 +15,10 @@ interface ChatWindowProps {
   onSendSticker: (url: string) => void;
   onSendLocation: (lat: number, lng: number) => void;
   isTyping: boolean;
-  onBack: () => void; // For mobile
+  onBack: () => void; 
   appearance: AppSettings['appearance'];
   onOpenProfile: () => void;
+  onCall?: () => void; // Added onCall prop
 }
 
 const BACKGROUND_THEMES: Record<string, string> = {
@@ -40,12 +41,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     isTyping, 
     onBack, 
     appearance,
-    onOpenProfile
+    onOpenProfile,
+    onCall // Destructure onCall
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   const [showAttachMenu, setShowAttachMenu] = useState(false);
-  const [isCalling, setIsCalling] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showEncryptionModal, setShowEncryptionModal] = useState(false);
@@ -178,17 +179,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       if (mediaRecorderRef.current && isRecording) {
           mediaRecorderRef.current.onstop = () => {
               if (send) {
-                  const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' }); // Use webm for browser compatibility
+                  const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' }); 
                   const audioFile = new File([audioBlob], 'voice-message.webm', { type: 'audio/webm' });
                   
-                  // Calculate duration (approximate or use the counter)
                   onSendMessage('', audioFile, 'voice', recordingDuration);
               }
               
-              // Stop all tracks to release mic
               mediaRecorderRef.current?.stream.getTracks().forEach(track => track.stop());
               
-              // Reset state
               setIsRecording(false);
               setRecordingDuration(0);
               mediaRecorderRef.current = null;
@@ -227,26 +225,18 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         className={`flex flex-col h-full relative transition-colors duration-200 ${bgClass}`}
         style={{ fontSize: `${appearance.textSize}%` }}
     >
-       {/* Background Pattern (Subtle) */}
        <div className="absolute inset-0 opacity-[0.03] dark:opacity-[0.05] pointer-events-none" 
             style={{ 
                 backgroundImage: `url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23000000' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E")`
             }} 
        />
 
-      {/* Call Overlay */}
-      {isCalling && (
-          <CallOverlay contact={contact} onEndCall={() => setIsCalling(false)} />
-      )}
-
-      {/* Encryption Modal */}
       <EncryptionModal 
         isOpen={showEncryptionModal}
         onClose={() => setShowEncryptionModal(false)}
         contact={contact}
       />
 
-      {/* Hidden File Inputs */}
       <input type="file" ref={imageInputRef} accept="image/*" className="hidden" onChange={handleFileSelect} />
       <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileSelect} />
 
@@ -264,7 +254,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 <h2 className="text-slate-900 dark:text-white font-semibold text-sm leading-tight">
                     {contact.name}
                 </h2>
-                {/* Lock Icon for E2EE */}
                 <button 
                     onClick={(e) => { e.stopPropagation(); setShowEncryptionModal(true); }}
                     className="text-gray-400 hover:text-green-500 transition-colors focus:outline-none"
@@ -280,7 +269,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
         </div>
         <div className="flex items-center gap-4 text-gray-400">
           <button 
-            onClick={(e) => { e.stopPropagation(); setIsCalling(true); }} 
+            onClick={(e) => { e.stopPropagation(); onCall?.(); }} 
             className="hover:text-blue-500 transition-colors"
           >
             <Phone size={20} />
@@ -293,7 +282,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       <div className="flex-1 overflow-y-auto p-4 md:p-6 z-0">
         <div className="max-w-3xl mx-auto flex flex-col justify-end min-h-full">
             
-            {/* Encryption Notice in Chat */}
             <div className="flex justify-center mb-6">
                 <button 
                     onClick={() => setShowEncryptionModal(true)}
@@ -330,7 +318,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       <div className="flex-none bg-white dark:bg-slate-800 p-3 md:p-4 border-t border-gray-200 dark:border-slate-700 z-10 transition-colors">
         <div className="max-w-3xl mx-auto flex items-end gap-2 relative">
           
-          {/* File Preview */}
           {selectedFile && (
               <div className="absolute bottom-full left-0 mb-3 ml-12 bg-white dark:bg-slate-800 p-2 rounded-lg shadow-lg border border-gray-200 dark:border-slate-700 flex items-start gap-3 animate-in fade-in slide-in-from-bottom-2">
                   {previewUrl ? (
@@ -353,10 +340,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
               </div>
           )}
 
-          {/* Normal Input Mode */}
           {!isRecording ? (
               <>
-                {/* Attach Button & Menu */}
                 <div className="relative attach-trigger">
                     <button 
                         onClick={(e) => { e.stopPropagation(); setShowAttachMenu(!showAttachMenu); setShowEmojiPicker(false); }}
@@ -413,7 +398,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                         }}
                     />
                     
-                    {/* Emoji Trigger */}
                     <div className="relative emoji-trigger">
                         <button 
                             onClick={(e) => { e.stopPropagation(); setShowEmojiPicker(!showEmojiPicker); setShowAttachMenu(false); }}
@@ -445,7 +429,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
                 </button>
               </>
           ) : (
-              // Recording Mode
               <div className="flex-1 bg-white dark:bg-slate-800 rounded-2xl flex items-center justify-between px-2 animate-in fade-in duration-200">
                   <div className="flex items-center gap-3">
                       <div className="w-3 h-3 bg-red-500 rounded-full animate-pulse" />

@@ -1,4 +1,3 @@
-
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -20,7 +19,7 @@ const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/zenchat_lo
 
 // Middleware
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '50mb' })); // Increase payload limit for images
 
 // --- MongoDB Connection ---
 if (MONGO_URI.includes('<password>')) {
@@ -218,6 +217,7 @@ app.all('/api/*', (req, res) => {
 // --- Socket.io ---
 
 const io = new Server(server, {
+    maxHttpBufferSize: 1e8, // Increase buffer size for images (100MB)
     cors: {
         origin: "*", // Allow connections from anywhere (Render needs this)
         methods: ["GET", "POST"]
@@ -227,6 +227,19 @@ const io = new Server(server, {
 // Helper to update chat history in MongoDB
 const saveMessageToDB = async (senderId, receiverId, message) => {
     try {
+        // SPECIAL CASE: Saved Messages (Cloud Storage)
+        if (receiverId === 'saved-messages') {
+             const sender = await User.findOne({ id: senderId });
+             if (sender) {
+                 const history = sender.chatHistory || {};
+                 const chat = history['saved-messages'] || [];
+                 chat.push({ ...message, status: 'read' }); // Automatically read
+                 history['saved-messages'] = chat;
+                 await User.updateOne({ id: senderId }, { $set: { chatHistory: history } });
+             }
+             return;
+        }
+
         // 1. Update Sender's History
         const sender = await User.findOne({ id: senderId });
         if (sender) {
@@ -248,9 +261,6 @@ const saveMessageToDB = async (senderId, receiverId, message) => {
             if (!chat.some(m => m.id === message.id)) {
                 chat.push(message);
                 history[senderId] = chat;
-                
-                // Also update sender in contact list if needed (optional optimization)
-                
                 await User.updateOne({ id: receiverId }, { $set: { chatHistory: history } });
             }
         }
@@ -270,8 +280,14 @@ io.on('connection', (socket) => {
         const { receiverId, message } = data;
         const senderId = message.senderId;
 
-        // Save to DB first/concurrently to ensure persistence
+        // Save to DB
         await saveMessageToDB(senderId, receiverId, message);
+
+        // If it's saved messages, we don't need to emit to anyone else
+        if (receiverId === 'saved-messages') {
+            socket.emit('message_sent', { tempId: message.id, status: 'read' });
+            return;
+        }
 
         // Relay to receiver
         io.to(receiverId).emit('receive_message', message);

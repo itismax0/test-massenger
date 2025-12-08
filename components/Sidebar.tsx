@@ -1,8 +1,8 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Contact, ContactType, UserProfile } from '../types';
 import Avatar from './Avatar';
 import { Search, X, Settings, Edit, Users, Megaphone, Globe, AtSign } from 'lucide-react';
+import { SAVED_MESSAGES_ID } from '../constants';
 
 interface SidebarProps {
   contacts: Contact[];
@@ -160,7 +160,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               ${activeContactId === contact.id ? 'bg-blue-50/50 dark:bg-blue-900/20' : 'hover:bg-gray-50 dark:hover:bg-slate-700/50'}
             `}
           >
-            <Avatar src={contact.avatarUrl} alt={contact.name} size="md" status={contact.isOnline} />
+            <Avatar src={contact.avatarUrl} alt={contact.name} size="md" status={contact.isOnline} id={contact.id} />
             <div className="ml-3 flex-1 min-w-0">
               <div className="flex justify-between items-baseline mb-0.5">
                 <h3 className={`text-sm font-medium truncate flex items-center gap-1 ${activeContactId === contact.id ? 'text-blue-900 dark:text-blue-300' : 'text-slate-800 dark:text-white'}`}>
@@ -176,7 +176,7 @@ const Sidebar: React.FC<SidebarProps> = ({
               </div>
               <div className="flex justify-between items-center">
                 <p className="text-sm text-gray-500 dark:text-gray-400 truncate pr-2">
-                    {contact.id === activeContactId && contact.type === 'user' ? 'Черновик: ' : ''}{contact.lastMessage}
+                    {contact.id === activeContactId && contact.type === 'user' && contact.id !== SAVED_MESSAGES_ID ? 'Черновик: ' : ''}{contact.lastMessage}
                 </p>
                 {contact.unreadCount > 0 && (
                   <span className="bg-blue-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-full min-w-[1.25rem] text-center">

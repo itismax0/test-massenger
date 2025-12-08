@@ -1,13 +1,16 @@
 import React, { useState, useEffect } from 'react';
+import { Bookmark } from 'lucide-react';
+import { SAVED_MESSAGES_ID } from '../constants';
 
 interface AvatarProps {
   src?: string;
   alt: string;
   size?: 'sm' | 'md' | 'lg' | 'xl';
   status?: boolean; // isOnline
+  id?: string; // Added to identify Saved Messages
 }
 
-const Avatar: React.FC<AvatarProps> = ({ src, alt, size = 'md', status }) => {
+const Avatar: React.FC<AvatarProps> = ({ src, alt, size = 'md', status, id }) => {
   const [imageError, setImageError] = useState(false);
 
   useEffect(() => {
@@ -20,6 +23,15 @@ const Avatar: React.FC<AvatarProps> = ({ src, alt, size = 'md', status }) => {
     lg: 'w-16 h-16 text-xl',
     xl: 'w-24 h-24 text-3xl',
   };
+
+  // Special handling for Saved Messages
+  if (id === SAVED_MESSAGES_ID) {
+      return (
+          <div className={`${sizeClasses[size]} rounded-full bg-blue-500 flex items-center justify-center text-white shadow-sm`}>
+              <Bookmark size={size === 'sm' ? 14 : size === 'md' ? 22 : size === 'lg' ? 28 : 36} fill="currentColor" />
+          </div>
+      );
+  }
 
   const getInitials = (name: string) => {
     return name ? name.charAt(0).toUpperCase() : '?';

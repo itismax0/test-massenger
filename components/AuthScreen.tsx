@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { Mail, Lock, User, ArrowRight, Eye, EyeOff, AlertCircle, Loader2 } from 'lucide-react';
+import { Mail, Lock, User, ArrowRight, Eye, EyeOff, AlertCircle, Loader2, Code2 } from 'lucide-react';
 import { db } from '../services/db';
 import { UserProfile } from '../types';
 
@@ -53,6 +53,11 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
         setError(err.message || 'Произошла ошибка. Попробуйте еще раз.');
         setIsLoading(false); // Only stop loading if there was an error
     }
+  };
+
+  const handleDevLogin = () => {
+      const profile = db.loginAsDev();
+      onLoginSuccess(profile);
   };
 
   const toggleMode = () => {
@@ -167,6 +172,17 @@ const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
           </div>
 
         </form>
+
+        <div className="bg-gray-50 dark:bg-slate-900/50 p-4 border-t border-gray-100 dark:border-slate-700">
+            <button 
+                type="button" 
+                onClick={handleDevLogin}
+                className="w-full flex items-center justify-center gap-2 text-xs text-gray-500 dark:text-gray-400 hover:text-slate-800 dark:hover:text-white transition-colors uppercase tracking-wider font-semibold"
+            >
+                <Code2 size={14} />
+                Войти как разработчик (Skip)
+            </button>
+        </div>
       </div>
     </div>
   );

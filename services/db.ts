@@ -1,7 +1,6 @@
-
 import { api } from './api';
 import { AppSettings, Contact, Message, UserData, UserProfile, DeviceSession } from '../types';
-import { CONTACTS, INITIAL_SETTINGS, INITIAL_DEVICES } from '../constants';
+import { CONTACTS, INITIAL_SETTINGS, INITIAL_DEVICES, SAVED_MESSAGES_ID } from '../constants';
 
 const DATA_PREFIX = 'zenchat_data_';
 const SESSION_KEY = 'zenchat_session';
@@ -38,6 +37,23 @@ export const db = {
         return profile;
     },
 
+    // --- DEV MODE: Skip Registration ---
+    loginAsDev(): UserProfile {
+        const devId = 'dev-' + Math.random().toString(36).substr(2, 9);
+        const profile: UserProfile = {
+            id: devId,
+            name: 'Developer',
+            email: `dev_${devId}@local.test`,
+            avatarUrl: '',
+            username: `dev_${Math.floor(Math.random() * 1000)}`
+        };
+
+        localStorage.setItem(SESSION_KEY, profile.id);
+        this._initLocalCache(profile.id, profile);
+        console.log("Logged in as Dev User:", profile);
+        return profile;
+    },
+
     async logout() {
         localStorage.removeItem(SESSION_KEY);
         // Optional: Call api.logout() if you implement server-side session clearing
@@ -51,6 +67,15 @@ export const db = {
 
     async updateProfile(userId: string, updates: Partial<UserProfile>): Promise<UserProfile> {
         // update on server
+        // If it's a dev user, just update locally
+        if (userId.startsWith('dev-')) {
+            const userData = this.getData(userId);
+            const updatedProfile = { ...userData.profile, ...updates };
+            userData.profile = updatedProfile;
+            this.saveData(userId, userData);
+            return updatedProfile;
+        }
+
         const updatedProfile = await api.updateProfile(userId, updates);
         
         // update local cache
@@ -69,6 +94,8 @@ export const db = {
     
     // We keep a local copy of data for speed/offline, but sync with server on load
     async syncWithServer(userId: string) {
+        if (userId.startsWith('dev-')) return; // Skip sync for dev users
+
         try {
             const serverData = await api.syncData(userId);
             
@@ -128,16 +155,21 @@ export const db = {
         
         // Init default chats
         CONTACTS.forEach(c => {
-             initialData.chatHistory[c.id] = [
-                {
-                    id: `msg-${c.id}-init`,
-                    text: c.lastMessage || 'Привет!',
-                    senderId: c.id,
-                    timestamp: c.lastMessageTime || Date.now(),
-                    status: 'read',
-                    type: 'text'
-                }
-            ];
+            // For Saved Messages, we might want an empty history or a welcome message
+            if (c.id === SAVED_MESSAGES_ID) {
+                initialData.chatHistory[c.id] = [];
+            } else {
+                 initialData.chatHistory[c.id] = [
+                    {
+                        id: `msg-${c.id}-init`,
+                        text: c.lastMessage || 'Привет!',
+                        senderId: c.id,
+                        timestamp: c.lastMessageTime || Date.now(),
+                        status: 'read',
+                        type: 'text'
+                    }
+                ];
+            }
         });
         
         return initialData;

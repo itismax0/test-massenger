@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS, CONTACTS } from './constants';
+import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS, CONTACTS, SAVED_MESSAGES_ID, SAVED_MESSAGES_CONTACT } from './constants';
 import { Message, Contact, MessageType, AppSettings, DeviceSession, ContactType, UserProfile, UserData } from './types';
 import Sidebar from './components/Sidebar';
 import ChatWindow from './components/ChatWindow';
@@ -8,9 +7,24 @@ import SettingsModal from './components/SettingsModal';
 import CreateChatModal from './components/CreateChatModal';
 import AuthScreen from './components/AuthScreen';
 import ProfileInfo from './components/ProfileInfo';
+import CallOverlay from './components/CallOverlay';
+import IncomingCallModal from './components/IncomingCallModal';
 import { geminiService } from './services/geminiService';
 import { db } from './services/db';
 import { socketService } from './services/socketService';
+
+// Add type definitions for SimplePeer which is loaded via CDN script
+interface SimplePeerInstance {
+    on(event: string, callback: (data: any) => void): void;
+    signal(data: any): void;
+    destroy(): void;
+}
+
+declare global {
+    interface Window {
+        SimplePeer: any;
+    }
+}
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -34,6 +48,17 @@ const App: React.FC = () => {
   const [isCreateChatOpen, setIsCreateChatOpen] = useState(false);
   const [createChatType, setCreateChatType] = useState<ContactType>('group');
 
+  // --- Call State ---
+  const [callStatus, setCallStatus] = useState<'idle' | 'calling' | 'receiving' | 'connected'>('idle');
+  const [incomingCallData, setIncomingCallData] = useState<{ from: string; name: string; signal: any } | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  
+  // Ref changed from RTCPeerConnection to SimplePeerInstance
+  const connectionRef = useRef<SimplePeerInstance | null>(null);
+
   // Refs for state access inside callbacks/effects
   const userProfileRef = useRef(userProfile);
   const contactsRef = useRef(contacts);
@@ -50,7 +75,14 @@ const App: React.FC = () => {
       try {
           const data = db.getData(userId);
           setUserProfile(data.profile);
-          setContacts(data.contacts);
+          
+          // Ensure Saved Messages is in contacts if missing (for legacy data)
+          let loadedContacts = data.contacts;
+          if (!loadedContacts.some(c => c.id === SAVED_MESSAGES_ID)) {
+             loadedContacts = [SAVED_MESSAGES_CONTACT, ...loadedContacts];
+          }
+
+          setContacts(loadedContacts);
           setChatHistory(data.chatHistory);
           setSettings(data.settings);
           setDevices(data.devices);
@@ -88,9 +120,7 @@ const App: React.FC = () => {
             const currentHistory = chatHistoryRef.current;
             const currentContacts = contactsRef.current;
             
-            // 1. Update Chat History
             const chatMessages = currentHistory[senderId] || [];
-            // Avoid duplicates
             if (chatMessages.some(m => m.id === message.id)) return;
 
             const updatedHistory = {
@@ -99,8 +129,6 @@ const App: React.FC = () => {
             };
             setChatHistory(updatedHistory);
 
-            // 2. Update Contacts (Last message, Unread count)
-            // Check if contact exists, if not, we might need to fetch profile (simplified here: assumes contact exists or handled)
             const updatedContacts = currentContacts.map(c => {
                 if (c.id === senderId) {
                     return {
@@ -113,13 +141,9 @@ const App: React.FC = () => {
                 }
                 return c;
             });
-
-            // If contact doesn't exist (new person wrote to us), we should ideally fetch them. 
-            // For now, let's rely on syncing or existing contacts.
             
             setContacts(updatedContacts);
             
-            // Save to local storage/DB
             if (userProfileRef.current.id) {
                 db.saveData(userProfileRef.current.id, { 
                     chatHistory: updatedHistory, 
@@ -128,11 +152,154 @@ const App: React.FC = () => {
             }
         });
 
+        // --- Call Listeners ---
+        socketService.onIncomingCall(({ from, name, signal }) => {
+            console.log("Incoming call from:", name);
+            setIncomingCallData({ from, name, signal });
+            setCallStatus('receiving');
+        });
+
+        socketService.onCallAccepted((signal) => {
+             setCallStatus('connected');
+             connectionRef.current?.signal(signal);
+        });
+
+        socketService.onIceCandidate(({ candidate }) => {
+             connectionRef.current?.signal(candidate);
+        });
+
+        socketService.onCallEnded(() => {
+            leaveCall();
+        });
+
         return () => {
             socketService.disconnect();
         };
     }
-  }, [isAuthenticated, userProfile.id]); // Re-run if auth changes
+  }, [isAuthenticated, userProfile.id]); 
+
+  // --- CALL LOGIC ---
+  const startCall = async () => {
+      if (!activeContactId) return;
+      const contactToCall = contacts.find(c => c.id === activeContactId);
+      if (!contactToCall) return;
+
+      setCallStatus('calling');
+      
+      try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+          setLocalStream(stream);
+
+          const peer = new window.SimplePeer({
+              initiator: true,
+              trickle: false,
+              stream: stream
+          });
+
+          peer.on('signal', (data: any) => {
+              socketService.callUser(activeContactId, data, userProfile.name);
+          });
+
+          peer.on('stream', (stream: MediaStream) => {
+              setRemoteStream(stream);
+          });
+          
+          peer.on('error', (err: any) => {
+              console.error("Peer error:", err);
+              leaveCall();
+          });
+
+          connectionRef.current = peer;
+
+      } catch (err) {
+          console.error("Error accessing media devices", err);
+          alert("Не удалось получить доступ к камере или микрофону");
+          setCallStatus('idle');
+      }
+  };
+
+  const answerCall = async () => {
+      if (!incomingCallData) return;
+      
+      setCallStatus('connected');
+
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        setLocalStream(stream);
+
+        const peer = new window.SimplePeer({
+            initiator: false,
+            trickle: false,
+            stream: stream
+        });
+
+        peer.on('signal', (data: any) => {
+            socketService.answerCall(incomingCallData.from, data);
+        });
+
+        peer.on('stream', (stream: MediaStream) => {
+            setRemoteStream(stream);
+        });
+        
+        peer.on('error', (err: any) => {
+             console.error("Peer error:", err);
+             leaveCall();
+        });
+
+        peer.signal(incomingCallData.signal);
+        connectionRef.current = peer;
+
+      } catch (err) {
+         console.error("Error answering call", err);
+         leaveCall();
+      }
+  };
+
+  const leaveCall = () => {
+      setCallStatus('idle');
+      
+      if (connectionRef.current) {
+          connectionRef.current.destroy();
+          connectionRef.current = null;
+      }
+      
+      if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+          setLocalStream(null);
+      }
+      
+      setRemoteStream(null);
+      setIncomingCallData(null);
+      
+      // Notify other user if we are the ones hanging up
+      if (activeContactId && callStatus === 'connected') {
+          socketService.endCall(activeContactId);
+      } else if (incomingCallData) {
+          socketService.endCall(incomingCallData.from);
+      }
+  };
+
+  const toggleMute = () => {
+      if (localStream) {
+          const audioTrack = localStream.getAudioTracks()[0];
+          if (audioTrack) {
+              audioTrack.enabled = !audioTrack.enabled;
+              setIsMuted(!audioTrack.enabled);
+          }
+      }
+  };
+
+  const toggleVideo = () => {
+      if (localStream) {
+          const videoTrack = localStream.getVideoTracks()[0];
+          if (videoTrack) {
+              videoTrack.enabled = !videoTrack.enabled;
+              setIsVideoEnabled(videoTrack.enabled);
+          }
+      }
+  };
+
+  // --- STANDARD APP LOGIC ---
 
   const handleLoginSuccess = (profile: UserProfile) => {
       loadUserData(profile.id);
@@ -145,7 +312,6 @@ const App: React.FC = () => {
       setActiveContactId(null);
   };
 
-  // Apply Dark Mode
   useEffect(() => {
     if (settings.appearance.darkMode) {
       document.documentElement.classList.add('dark');
@@ -154,7 +320,6 @@ const App: React.FC = () => {
     }
   }, [settings.appearance.darkMode]);
 
-  // Auto-select first contact on desktop load
   useEffect(() => {
     if (isAuthenticated && !activeContactId && window.innerWidth >= 768 && contacts.length > 0) {
         setActiveContactId(contacts[0].id);
@@ -170,27 +335,22 @@ const App: React.FC = () => {
     persistState({ devices: newDevices });
   };
 
-  // Update Settings Wrapper
   const handleUpdateSettings = (newSettings: AppSettings) => {
       setSettings(newSettings);
       persistState({ settings: newSettings });
   };
 
-  // Update Profile Wrapper - Now Async to handle validation
   const handleUpdateProfile = async (newProfile: UserProfile) => {
       if (!userProfile.id) return;
-      // Use db.updateProfile to handle username uniqueness checks
       const updatedProfile = await db.updateProfile(userProfile.id, newProfile);
       setUserProfile(updatedProfile);
   };
 
-  // Search Users Handler
   const handleSearchUsers = async (query: string): Promise<UserProfile[]> => {
       if (!userProfile.id) return [];
       return await db.searchUsers(query, userProfile.id);
   };
 
-  // Add Found User to Contacts
   const handleAddContact = (profile: UserProfile) => {
       const existing = contacts.find(c => c.id === profile.id);
       if (existing) {
@@ -205,9 +365,9 @@ const App: React.FC = () => {
           lastMessage: 'Начать общение',
           lastMessageTime: Date.now(),
           unreadCount: 0,
-          isOnline: false, // will update via socket later
+          isOnline: false,
           type: 'user',
-          email: profile.username ? `@${profile.username}` : profile.email // Store display handle
+          email: profile.username ? `@${profile.username}` : profile.email
       };
 
       const updatedContacts = [newContact, ...contacts];
@@ -224,11 +384,10 @@ const App: React.FC = () => {
     const newId = Date.now().toString();
     const isGroup = createChatType === 'group';
     
-    // Gemini acts as assistant for groups/channels
     const newContact: Contact = {
         id: newId,
         name: name,
-        avatarUrl: '', // Use empty string to let Avatar component generate initials
+        avatarUrl: '',
         lastMessage: isGroup ? 'Группа создана' : 'Канал создан',
         lastMessageTime: Date.now(),
         unreadCount: 0,
@@ -256,13 +415,10 @@ const App: React.FC = () => {
     const currentContactId = activeContactId;
     const currentContact = contacts.find(c => c.id === currentContactId);
     
-    // Prepare attachment data if exists
     let attachmentUrl = '';
     let base64Data = '';
     if (file) {
-        // Create a fake local URL for immediate display
         attachmentUrl = URL.createObjectURL(file);
-        // Convert to base64 for API
         base64Data = await new Promise<string>((resolve) => {
             const reader = new FileReader();
             reader.onload = (e) => resolve(e.target?.result as string);
@@ -273,22 +429,20 @@ const App: React.FC = () => {
     const newMessage: Message = {
       id: Date.now().toString(),
       text,
-      senderId: userProfile.id || CURRENT_USER_ID, // Use real ID
+      senderId: userProfile.id || CURRENT_USER_ID,
       timestamp: Date.now(),
       status: 'sending',
       type: type,
-      attachmentUrl: attachmentUrl, // Local URL for immediate render
+      attachmentUrl: attachmentUrl,
       fileName: file?.name,
       fileSize: file ? (file.size / 1024).toFixed(1) + ' КБ' : undefined,
       duration: duration
     };
 
-    // Update state locally first (Optimistic UI)
     const updatedMessages = [...(chatHistory[currentContactId] || []), newMessage];
     const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
     setChatHistory(newHistory);
 
-    // Update last message preview
     const previewText = type === 'image' ? '📷 Фото' : (type === 'file' ? '📄 Файл' : (type === 'voice' ? '🎤 Голосовое сообщение' : text));
     const updatedContacts = contacts.map(c => c.id === currentContactId ? {
         ...c, 
@@ -297,22 +451,16 @@ const App: React.FC = () => {
     } : c);
     setContacts(updatedContacts);
 
-    // Save to DB locally
     persistState({ chatHistory: newHistory, contacts: updatedContacts });
 
-    // --- SEND TO SOCKET SERVER ---
-    // If it's a real user (not Gemini), send via socket
     if (currentContactId !== 'gemini-ai') {
-        // We need to send base64 to server if there is an attachment, 
-        // because the recipient cannot see our blob URL.
         const messageToSend = {
             ...newMessage,
-            attachmentUrl: base64Data || attachmentUrl // Prefer base64 for transmission if file exists
+            attachmentUrl: base64Data || attachmentUrl
         };
         socketService.sendMessage(messageToSend, currentContactId);
     }
     
-    // Simulate sent status after delay
     setTimeout(() => {
         setChatHistory((prev) => {
             const msgs = prev[currentContactId] || [];
@@ -323,8 +471,6 @@ const App: React.FC = () => {
         });
     }, 500);
 
-    // AI Response Logic
-    // Only respond if it's the Gemini AI contact
     if (currentContactId === 'gemini-ai') {
         setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
 
@@ -349,11 +495,10 @@ const App: React.FC = () => {
             };
 
             const historyWithAI = { 
-                ...newHistory, // use the history from before delay closure
+                ...newHistory,
                 [currentContactId]: [...updatedMessages, aiMessage] 
             };
             
-            // Re-update contacts for AI reply
             const contactsWithAI = updatedContacts.map(c => c.id === currentContactId ? {
                 ...c, 
                 lastMessage: responseText, 
@@ -401,16 +546,13 @@ const App: React.FC = () => {
       setContacts(updatedContacts);
       persistState({ chatHistory: newHistory, contacts: updatedContacts });
 
-      // Send to socket
       if (currentContactId !== 'gemini-ai') {
           socketService.sendMessage(newMessage, currentContactId);
       }
 
-      // If engaging with Gemini, send the location to it so it can use Google Maps Grounding
       if (currentContactId === 'gemini-ai') {
         setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
         try {
-            // Inform Gemini about the user's location using the text prompt and toolConfig
             const responseText = await geminiService.sendMessage(
                 currentContactId, 
                 "Это моя текущая геолокация. Что находится рядом?", 
@@ -471,18 +613,15 @@ const App: React.FC = () => {
       setChatHistory(newHistory);
       persistState({ chatHistory: newHistory });
 
-      // Send to socket
       if (currentContactId !== 'gemini-ai') {
           socketService.sendMessage(newMessage, currentContactId);
       }
 
-      // Respond to sticker only if Gemini
       if (currentContactId === 'gemini-ai') {
         setTypingStatus(prev => ({ ...prev, [currentContactId]: true }));
         
         setTimeout(async () => {
             try {
-                // Send a hidden prompt to Gemini representing the sticker
                 const responseText = await geminiService.sendMessage(
                     currentContactId, 
                     "[Пользователь отправил стикер]", 
@@ -551,6 +690,7 @@ const App: React.FC = () => {
             onBack={() => setIsMobileSidebarOpen(true)}
             appearance={settings.appearance}
             onOpenProfile={() => setIsProfileInfoOpen(true)}
+            onCall={startCall}
           />
         ) : (
           <div className="hidden md:flex flex-1 items-center justify-center bg-[#f8fafc] dark:bg-slate-900 flex-col text-gray-400">
@@ -561,6 +701,32 @@ const App: React.FC = () => {
           </div>
         )}
       </main>
+
+      {/* CALL OVERLAYS */}
+      
+      {/* 1. Incoming Call Modal */}
+      {callStatus === 'receiving' && incomingCallData && (
+          <IncomingCallModal 
+              callerName={incomingCallData.name} 
+              onAccept={answerCall}
+              onDecline={leaveCall}
+          />
+      )}
+
+      {/* 2. Active Call Screen (Video/Audio) */}
+      {(callStatus === 'calling' || callStatus === 'connected') && (
+          <CallOverlay 
+              contact={contacts.find(c => c.id === activeContactId) || { name: incomingCallData?.name || 'Unknown', avatarUrl: '' }} 
+              onEndCall={leaveCall}
+              localStream={localStream}
+              remoteStream={remoteStream}
+              isMuted={isMuted}
+              onToggleMute={toggleMute}
+              isVideoEnabled={isVideoEnabled}
+              onToggleVideo={toggleVideo}
+              status={callStatus === 'calling' ? 'Звоним...' : 'Идет разговор'}
+          />
+      )}
 
       {/* Settings Modal */}
       <SettingsModal 
@@ -592,6 +758,9 @@ const App: React.FC = () => {
             messages={activeMessages}
         />
       )}
+
+      {/* Simple Peer Script Injection (Required for WebRTC) */}
+      <script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
     </div>
   );
 };

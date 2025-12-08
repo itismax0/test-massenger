@@ -3,8 +3,22 @@ import { Contact, DeviceSession, AppSettings } from './types';
 export const GEMINI_MODEL = 'gemini-2.5-flash';
 
 export const CURRENT_USER_ID = 'me';
+export const SAVED_MESSAGES_ID = 'saved-messages';
+
+export const SAVED_MESSAGES_CONTACT: Contact = {
+  id: SAVED_MESSAGES_ID,
+  name: 'Избранное',
+  avatarUrl: '', // Handled specially in Avatar component
+  unreadCount: 0,
+  isOnline: false,
+  lastMessage: 'Сохраняйте сюда сообщения',
+  lastMessageTime: Date.now(),
+  type: 'user',
+  membersCount: 0
+};
 
 export const CONTACTS: Contact[] = [
+  SAVED_MESSAGES_CONTACT,
   {
     id: 'gemini-ai',
     name: 'Gemini',
