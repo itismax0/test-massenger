@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Bookmark } from 'lucide-react';
 import { SAVED_MESSAGES_ID } from '../constants';
@@ -33,12 +34,16 @@ const Avatar: React.FC<AvatarProps> = ({ src, alt, size = 'md', status, id }) =>
       );
   }
 
+  const safeAlt = alt || '?';
+
   const getInitials = (name: string) => {
-    return name ? name.charAt(0).toUpperCase() : '?';
+    if (!name) return '?';
+    return name.charAt(0).toUpperCase();
   };
 
   // Generate a consistent pastel color from the name string
   const getBackgroundColor = (name: string) => {
+    if (!name) return '#94a3b8'; // default gray
     const colors = [
       '#ef4444', // red-500
       '#f97316', // orange-500
@@ -66,16 +71,16 @@ const Avatar: React.FC<AvatarProps> = ({ src, alt, size = 'md', status, id }) =>
       {hasValidImage ? (
         <img
           src={src}
-          alt={alt}
+          alt={safeAlt}
           onError={() => setImageError(true)}
           className={`${sizeClasses[size]} rounded-full object-cover border border-gray-100 bg-gray-200`}
         />
       ) : (
         <div 
             className={`${sizeClasses[size]} rounded-full flex items-center justify-center font-bold text-white shadow-inner border border-white/20`}
-            style={{ backgroundColor: getBackgroundColor(alt) }}
+            style={{ backgroundColor: getBackgroundColor(safeAlt) }}
         >
-            {getInitials(alt)}
+            {getInitials(safeAlt)}
         </div>
       )}
       

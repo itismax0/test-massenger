@@ -116,10 +116,14 @@ export const db = {
             const serverData = await api.syncData(userId);
             const localData = this.getData(userId);
             
-            // CRITICAL FIX: Trust Server Data for History and Contacts
-            // Ensure we don't merge undefined/null arrays
-            const validServerContacts = Array.isArray(serverData.contacts) ? serverData.contacts : [];
-            const validLocalContacts = Array.isArray(localData.contacts) ? localData.contacts : [];
+            // CRITICAL FIX: Trust Server Data for History and Contacts but SANITIZE IT
+            const validServerContacts = Array.isArray(serverData.contacts) 
+                ? serverData.contacts.map((c: any) => this._sanitizeContact(c)).filter(Boolean)
+                : [];
+            
+            const validLocalContacts = Array.isArray(localData.contacts) 
+                ? localData.contacts.map((c: any) => this._sanitizeContact(c)).filter(Boolean) 
+                : [];
             
             const mergedData: UserData = {
                 ...localData,
@@ -146,18 +150,57 @@ export const db = {
         try {
             const parsed = JSON.parse(raw);
             
-            // SAFETY MERGE: ensure all top-level keys exist and are correct type
+            // Validate Profile
+            const profile = parsed.profile || defaultData.profile;
+            if (!profile || typeof profile !== 'object') {
+                profile.name = 'User';
+                profile.id = userId;
+            }
+
+            // Validate Contacts
+            let contacts = Array.isArray(parsed.contacts) ? parsed.contacts : defaultData.contacts;
+            // Strict sanitization: remove invalid entries and fix partial ones
+            contacts = contacts
+                .map((c: any) => this._sanitizeContact(c))
+                .filter((c: Contact | null) => c !== null);
+
             return {
-                profile: parsed.profile || defaultData.profile,
-                contacts: Array.isArray(parsed.contacts) ? parsed.contacts : defaultData.contacts,
+                profile: profile,
+                contacts: contacts,
                 chatHistory: parsed.chatHistory || defaultData.chatHistory,
                 settings: parsed.settings || defaultData.settings,
                 devices: Array.isArray(parsed.devices) ? parsed.devices : defaultData.devices
             };
         } catch (e) {
             console.error("Data corrupted, resetting", e);
+            // If corrupt, clear it so we don't crash next time
+            localStorage.removeItem(DATA_PREFIX + userId);
             return defaultData;
         }
+    },
+
+    // Helper to ensure contact has required fields preventing white screen of death
+    _sanitizeContact(c: any): Contact | null {
+        if (!c || typeof c !== 'object') return null;
+        
+        // If it's the Saved Messages placeholder, ensure it has the correct ID
+        if (c.id === SAVED_MESSAGES_ID) {
+             return { ...c, name: c.name || 'Избранное', type: 'user' };
+        }
+
+        // Must have an ID
+        if (!c.id) return null;
+
+        return {
+            ...c,
+            name: c.name || 'Unknown User', // Fallback name prevents Avatar crash
+            avatarUrl: c.avatarUrl || '',
+            unreadCount: typeof c.unreadCount === 'number' ? c.unreadCount : 0,
+            isOnline: !!c.isOnline,
+            type: c.type || 'user',
+            lastMessage: c.lastMessage || '',
+            lastMessageTime: c.lastMessageTime || Date.now()
+        };
     },
 
     saveData(userId: string, data: Partial<UserData>) {

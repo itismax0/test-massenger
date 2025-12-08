@@ -279,7 +279,8 @@ app.get('/api/sync/:userId', async (req, res) => {
         // We prioritize Server Groups over Local Contacts for groups
         const userContacts = fullData.contacts || [];
         // Filter out groups from stored contacts (to replace with fresh data)
-        const cleanUserContacts = userContacts.filter(c => c.type === 'user' || c.id === 'saved-messages');
+        // Added null check 'c &&' to prevent server crash if data is corrupted
+        const cleanUserContacts = userContacts.filter(c => c && (c.type === 'user' || c.id === 'saved-messages'));
         const finalContacts = [...groupContacts, ...cleanUserContacts];
 
         // Merge Chat History
