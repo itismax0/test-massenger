@@ -2,8 +2,9 @@
 import { io, Socket } from 'socket.io-client';
 import { Message } from '../types';
 
-// Use same URL logic as API
-const SOCKET_URL = (import.meta as any).env?.VITE_API_URL || 'http://127.0.0.1:3001';
+// Use relative path for unified deployment (Render)
+// For local development, the Vite proxy will forward this to the backend port.
+const SOCKET_URL = '/';
 
 class SocketService {
     private socket: Socket | null = null;
@@ -14,6 +15,7 @@ class SocketService {
 
         this.userId = userId;
         this.socket = io(SOCKET_URL, {
+            path: '/socket.io', // Standard Socket.io path
             transports: ['websocket', 'polling'], // Try websocket first
             reconnectionAttempts: 5
         });

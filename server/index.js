@@ -1,3 +1,4 @@
+
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -22,9 +23,28 @@ app.use(cors());
 app.use(express.json());
 
 // --- MongoDB Connection ---
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('✅ Connected to MongoDB'))
-  .catch(err => console.error('❌ MongoDB Connection Error:', err));
+if (MONGO_URI.includes('<password>')) {
+    console.error('================================================================');
+    console.error('❌ CRITICAL ERROR: Invalid MONGO_URI');
+    console.error('You forgot to replace <password> with your actual password in the connection string.');
+    console.error('Please go to Render Environment Variables and fix MONGO_URI.');
+    console.error('It should look like: mongodb+srv://user:mypassword123@...');
+    console.error('================================================================');
+}
+
+// Add connection options to handle timeouts better
+const connectDB = async () => {
+    try {
+        await mongoose.connect(MONGO_URI, {
+            serverSelectionTimeoutMS: 5000, // Fail fast if no connection
+        });
+        console.log('✅ Connected to MongoDB');
+    } catch (err) {
+        console.error('❌ MongoDB Connection Error:', err.message);
+        // Do not exit process, so the static site can still be served (though API will fail)
+    }
+};
+connectDB();
 
 // --- Mongoose Schemas ---
 // We store data slightly denormalized to match the existing frontend "UserData" structure
@@ -35,7 +55,7 @@ const UserSchema = new mongoose.Schema({
     name: String,
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true }, // In real app, hash this!
-    username: { type: String, unique: true, sparse: true },
+    username: { type: String, unique: true, sparse: true }, // Sparse allows multiple users to have no username (null/undefined)
     avatarUrl: String,
     
     // Storing JSON blobs for frontend state compatibility
@@ -48,6 +68,11 @@ const UserSchema = new mongoose.Schema({
 const User = mongoose.model('User', UserSchema);
 
 // --- Routes ---
+
+// Health Check
+app.get('/api/health', (req, res) => {
+    res.json({ status: 'ok', db: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
+});
 
 // Register
 app.post('/api/register', async (req, res) => {
@@ -64,9 +89,9 @@ app.post('/api/register', async (req, res) => {
             name,
             email,
             password,
-            username: '',
+            // Remove username from here so it defaults to undefined (allowed by sparse index)
+            // username: '', 
             avatarUrl: '',
-            // Defaults will be applied from Schema
         });
 
         await newUser.save();
@@ -74,8 +99,10 @@ app.post('/api/register', async (req, res) => {
         const { password: _, _id, __v, ...userProfile } = newUser.toObject();
         res.json(userProfile);
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: 'Server error during registration' });
+        console.error("Registration Error:", e);
+        // Send more detailed error if possible
+        const msg = e.code === 11000 ? 'Username or Email already taken' : 'Server error during registration';
+        res.status(500).json({ error: msg });
     }
 });
 
@@ -141,7 +168,11 @@ app.get('/api/users/search', async (req, res) => {
 
         const users = await User.find({
             id: { $ne: currentUserId },
-            $or: [{ name: regex }, { username: regex }]
+            $or: [
+                { name: regex }, 
+                { username: regex },
+                { email: regex } // ADDED: Allow searching by email
+            ]
         }).select('-password -_id -__v -chatHistory -contacts -settings -devices').limit(20);
 
         res.json(users);
@@ -179,6 +210,11 @@ app.get('/api/sync/:userId', async (req, res) => {
     }
 });
 
+// Handle generic API 404s to prevent hanging
+app.all('/api/*', (req, res) => {
+    res.status(404).json({ error: 'API Endpoint not found' });
+});
+
 // --- Socket.io ---
 
 const io = new Server(server, {
@@ -188,6 +224,41 @@ const io = new Server(server, {
     }
 });
 
+// Helper to update chat history in MongoDB
+const saveMessageToDB = async (senderId, receiverId, message) => {
+    try {
+        // 1. Update Sender's History
+        const sender = await User.findOne({ id: senderId });
+        if (sender) {
+            const history = sender.chatHistory || {};
+            const chat = history[receiverId] || [];
+            // Ensure no duplicates
+            if (!chat.some(m => m.id === message.id)) {
+                chat.push({ ...message, status: 'sent' });
+                history[receiverId] = chat;
+                await User.updateOne({ id: senderId }, { $set: { chatHistory: history } });
+            }
+        }
+
+        // 2. Update Receiver's History
+        const receiver = await User.findOne({ id: receiverId });
+        if (receiver) {
+            const history = receiver.chatHistory || {};
+            const chat = history[senderId] || [];
+            if (!chat.some(m => m.id === message.id)) {
+                chat.push(message);
+                history[senderId] = chat;
+                
+                // Also update sender in contact list if needed (optional optimization)
+                
+                await User.updateOne({ id: receiverId }, { $set: { chatHistory: history } });
+            }
+        }
+    } catch (e) {
+        console.error("Failed to save message to DB:", e);
+    }
+};
+
 io.on('connection', (socket) => {
     // console.log('User connected:', socket.id);
 
@@ -195,9 +266,17 @@ io.on('connection', (socket) => {
         socket.join(userId);
     });
 
-    socket.on('send_message', (data) => {
+    socket.on('send_message', async (data) => {
         const { receiverId, message } = data;
+        const senderId = message.senderId;
+
+        // Save to DB first/concurrently to ensure persistence
+        await saveMessageToDB(senderId, receiverId, message);
+
+        // Relay to receiver
         io.to(receiverId).emit('receive_message', message);
+        
+        // Notify sender it was sent (optional)
         socket.emit('message_sent', { tempId: message.id, status: 'sent' });
     });
 

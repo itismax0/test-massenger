@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { CURRENT_USER_ID, INITIAL_DEVICES, INITIAL_SETTINGS, CONTACTS } from './constants';
 import { Message, Contact, MessageType, AppSettings, DeviceSession, ContactType, UserProfile, UserData } from './types';
 import Sidebar from './components/Sidebar';
@@ -10,6 +10,7 @@ import AuthScreen from './components/AuthScreen';
 import ProfileInfo from './components/ProfileInfo';
 import { geminiService } from './services/geminiService';
 import { db } from './services/db';
+import { socketService } from './services/socketService';
 
 const App: React.FC = () => {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
@@ -32,6 +33,17 @@ const App: React.FC = () => {
   // Create Chat State
   const [isCreateChatOpen, setIsCreateChatOpen] = useState(false);
   const [createChatType, setCreateChatType] = useState<ContactType>('group');
+
+  // Refs for state access inside callbacks/effects
+  const userProfileRef = useRef(userProfile);
+  const contactsRef = useRef(contacts);
+  const chatHistoryRef = useRef(chatHistory);
+
+  useEffect(() => {
+    userProfileRef.current = userProfile;
+    contactsRef.current = contacts;
+    chatHistoryRef.current = chatHistory;
+  }, [userProfile, contacts, chatHistory]);
 
   // Load User Data Helper
   const loadUserData = (userId: string) => {
@@ -65,11 +77,69 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // --- SOCKET CONNECTION & LISTENERS ---
+  useEffect(() => {
+    if (isAuthenticated && userProfile.id) {
+        socketService.connect(userProfile.id);
+
+        // Listen for incoming messages
+        socketService.onMessage((message) => {
+            const senderId = message.senderId;
+            const currentHistory = chatHistoryRef.current;
+            const currentContacts = contactsRef.current;
+            
+            // 1. Update Chat History
+            const chatMessages = currentHistory[senderId] || [];
+            // Avoid duplicates
+            if (chatMessages.some(m => m.id === message.id)) return;
+
+            const updatedHistory = {
+                ...currentHistory,
+                [senderId]: [...chatMessages, message]
+            };
+            setChatHistory(updatedHistory);
+
+            // 2. Update Contacts (Last message, Unread count)
+            // Check if contact exists, if not, we might need to fetch profile (simplified here: assumes contact exists or handled)
+            const updatedContacts = currentContacts.map(c => {
+                if (c.id === senderId) {
+                    return {
+                        ...c,
+                        lastMessage: message.text || (message.type === 'image' ? 'Фото' : 'Вложение'),
+                        lastMessageTime: message.timestamp,
+                        unreadCount: activeContactId !== senderId ? (c.unreadCount || 0) + 1 : 0,
+                        isOnline: true 
+                    };
+                }
+                return c;
+            });
+
+            // If contact doesn't exist (new person wrote to us), we should ideally fetch them. 
+            // For now, let's rely on syncing or existing contacts.
+            
+            setContacts(updatedContacts);
+            
+            // Save to local storage/DB
+            if (userProfileRef.current.id) {
+                db.saveData(userProfileRef.current.id, { 
+                    chatHistory: updatedHistory, 
+                    contacts: updatedContacts 
+                });
+            }
+        });
+
+        return () => {
+            socketService.disconnect();
+        };
+    }
+  }, [isAuthenticated, userProfile.id]); // Re-run if auth changes
+
   const handleLoginSuccess = (profile: UserProfile) => {
       loadUserData(profile.id);
   };
 
   const handleLogout = async () => {
+      socketService.disconnect();
       await db.logout();
       setIsAuthenticated(false);
       setActiveContactId(null);
@@ -135,7 +205,7 @@ const App: React.FC = () => {
           lastMessage: 'Начать общение',
           lastMessageTime: Date.now(),
           unreadCount: 0,
-          isOnline: false,
+          isOnline: false, // will update via socket later
           type: 'user',
           email: profile.username ? `@${profile.username}` : profile.email // Store display handle
       };
@@ -203,17 +273,17 @@ const App: React.FC = () => {
     const newMessage: Message = {
       id: Date.now().toString(),
       text,
-      senderId: CURRENT_USER_ID,
+      senderId: userProfile.id || CURRENT_USER_ID, // Use real ID
       timestamp: Date.now(),
       status: 'sending',
       type: type,
-      attachmentUrl: attachmentUrl,
+      attachmentUrl: attachmentUrl, // Local URL for immediate render
       fileName: file?.name,
       fileSize: file ? (file.size / 1024).toFixed(1) + ' КБ' : undefined,
       duration: duration
     };
 
-    // Update state
+    // Update state locally first (Optimistic UI)
     const updatedMessages = [...(chatHistory[currentContactId] || []), newMessage];
     const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
     setChatHistory(newHistory);
@@ -227,10 +297,22 @@ const App: React.FC = () => {
     } : c);
     setContacts(updatedContacts);
 
-    // Save to DB
+    // Save to DB locally
     persistState({ chatHistory: newHistory, contacts: updatedContacts });
 
-    // Simulate network delay
+    // --- SEND TO SOCKET SERVER ---
+    // If it's a real user (not Gemini), send via socket
+    if (currentContactId !== 'gemini-ai') {
+        // We need to send base64 to server if there is an attachment, 
+        // because the recipient cannot see our blob URL.
+        const messageToSend = {
+            ...newMessage,
+            attachmentUrl: base64Data || attachmentUrl // Prefer base64 for transmission if file exists
+        };
+        socketService.sendMessage(messageToSend, currentContactId);
+    }
+    
+    // Simulate sent status after delay
     setTimeout(() => {
         setChatHistory((prev) => {
             const msgs = prev[currentContactId] || [];
@@ -298,7 +380,7 @@ const App: React.FC = () => {
       const newMessage: Message = {
           id: Date.now().toString(),
           text: '',
-          senderId: CURRENT_USER_ID,
+          senderId: userProfile.id || CURRENT_USER_ID,
           timestamp: Date.now(),
           status: 'sent',
           type: 'location',
@@ -318,6 +400,11 @@ const App: React.FC = () => {
       setChatHistory(newHistory);
       setContacts(updatedContacts);
       persistState({ chatHistory: newHistory, contacts: updatedContacts });
+
+      // Send to socket
+      if (currentContactId !== 'gemini-ai') {
+          socketService.sendMessage(newMessage, currentContactId);
+      }
 
       // If engaging with Gemini, send the location to it so it can use Google Maps Grounding
       if (currentContactId === 'gemini-ai') {
@@ -372,7 +459,7 @@ const App: React.FC = () => {
       const newMessage: Message = {
         id: Date.now().toString(),
         text: '',
-        senderId: CURRENT_USER_ID,
+        senderId: userProfile.id || CURRENT_USER_ID,
         timestamp: Date.now(),
         status: 'read',
         type: 'sticker',
@@ -383,6 +470,11 @@ const App: React.FC = () => {
       const newHistory = { ...chatHistory, [currentContactId]: updatedMessages };
       setChatHistory(newHistory);
       persistState({ chatHistory: newHistory });
+
+      // Send to socket
+      if (currentContactId !== 'gemini-ai') {
+          socketService.sendMessage(newMessage, currentContactId);
+      }
 
       // Respond to sticker only if Gemini
       if (currentContactId === 'gemini-ai') {
