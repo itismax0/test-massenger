@@ -75,18 +75,21 @@ const App: React.FC = () => {
   const loadUserData = (userId: string) => {
       try {
           const data = db.getData(userId);
-          setUserProfile(data.profile);
+          
+          // Safety checks to prevent white screen crashes
+          const safeProfile = data.profile || { id: userId, name: 'User', email: '', avatarUrl: '' };
+          setUserProfile(safeProfile);
           
           // Ensure Saved Messages is in contacts if missing (for legacy data)
-          let loadedContacts = data.contacts;
-          if (!loadedContacts.some(c => c.id === SAVED_MESSAGES_ID)) {
+          let loadedContacts = Array.isArray(data.contacts) ? data.contacts : [];
+          if (!loadedContacts.some(c => c && c.id === SAVED_MESSAGES_ID)) {
              loadedContacts = [SAVED_MESSAGES_CONTACT, ...loadedContacts];
           }
 
           setContacts(loadedContacts);
-          setChatHistory(data.chatHistory);
-          setSettings(data.settings);
-          setDevices(data.devices);
+          setChatHistory(data.chatHistory || {});
+          setSettings(data.settings || INITIAL_SETTINGS);
+          setDevices(data.devices || INITIAL_DEVICES);
           setIsAuthenticated(true);
       } catch (error) {
           console.error("Failed to load user data:", error);
@@ -147,6 +150,8 @@ const App: React.FC = () => {
 
                 Object.keys(newHistory).forEach(contactId => {
                     const messages = newHistory[contactId];
+                    if (!Array.isArray(messages)) return;
+                    
                     const msgIndex = messages.findIndex(m => m.id === tempId);
                     if (msgIndex !== -1) {
                         const updatedMsgs = [...messages];
@@ -202,6 +207,13 @@ const App: React.FC = () => {
           const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
           setLocalStream(stream);
 
+          if (!window.SimplePeer) {
+              console.error("SimplePeer library not loaded");
+              alert("Ошибка инициализации звонка. Попробуйте обновить страницу.");
+              setCallStatus('idle');
+              return;
+          }
+
           const peer = new window.SimplePeer({
               initiator: true,
               trickle: false,
@@ -239,6 +251,13 @@ const App: React.FC = () => {
         const stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
         setLocalStream(stream);
 
+        if (!window.SimplePeer) {
+              console.error("SimplePeer library not loaded");
+              alert("Ошибка инициализации звонка.");
+              leaveCall();
+              return;
+        }
+
         const peer = new window.SimplePeer({
             initiator: false,
             trickle: false,
@@ -272,7 +291,9 @@ const App: React.FC = () => {
       setCallStatus('idle');
       
       if (connectionRef.current) {
-          connectionRef.current.destroy();
+          try {
+            connectionRef.current.destroy();
+          } catch(e) { console.error("Error destroying peer", e) }
           connectionRef.current = null;
       }
       
@@ -313,6 +334,7 @@ const App: React.FC = () => {
       await db.logout();
       setIsAuthenticated(false);
       setActiveContactId(null);
+      setContacts([]);
   };
 
   useEffect(() => {
@@ -329,7 +351,7 @@ const App: React.FC = () => {
     }
   }, [isAuthenticated, activeContactId, contacts]);
 
-  const activeContact = contacts.find((c) => c.id === activeContactId);
+  const activeContact = contacts.find((c) => c && c.id === activeContactId);
   const activeMessages = activeContactId ? (chatHistory[activeContactId] || []) : [];
 
   const handleTerminateSessions = () => {
@@ -345,8 +367,12 @@ const App: React.FC = () => {
 
   const handleUpdateProfile = async (newProfile: UserProfile) => {
       if (!userProfile.id) return;
-      const updatedProfile = await db.updateProfile(userProfile.id, newProfile);
-      setUserProfile(updatedProfile);
+      try {
+        const updatedProfile = await db.updateProfile(userProfile.id, newProfile);
+        setUserProfile(updatedProfile);
+      } catch (e) {
+        console.error("Failed to update profile", e);
+      }
   };
 
   const handleSearchUsers = async (query: string): Promise<UserProfile[]> => {
@@ -666,7 +692,7 @@ const App: React.FC = () => {
 
       {(callStatus === 'calling' || callStatus === 'connected') && (
           <CallOverlay 
-              contact={contacts.find(c => c.id === activeContactId) || { name: incomingCallData?.name || 'Unknown', avatarUrl: '' }} 
+              contact={contacts.find(c => c && c.id === activeContactId) || { name: incomingCallData?.name || 'Unknown', avatarUrl: '' }} 
               onEndCall={leaveCall}
               localStream={localStream}
               remoteStream={remoteStream}
@@ -708,8 +734,6 @@ const App: React.FC = () => {
             messages={activeMessages}
         />
       )}
-
-      <script src="https://unpkg.com/simple-peer@9.11.1/simplepeer.min.js"></script>
     </div>
   );
 };

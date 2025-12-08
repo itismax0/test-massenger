@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Contact, ContactType, UserProfile } from '../types';
 import Avatar from './Avatar';
@@ -35,10 +36,11 @@ const Sidebar: React.FC<SidebarProps> = ({
   const [globalResults, setGlobalResults] = useState<UserProfile[]>([]);
   const [isSearching, setIsSearching] = useState(false);
 
-  // Filter local contacts
-  const filteredContacts = contacts.filter((c) =>
-    c.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
-    (c.type === 'user' && c.description?.toLowerCase().includes(searchTerm.toLowerCase()))
+  // Safely filter local contacts ensuring they exist and have a name
+  const safeContacts = Array.isArray(contacts) ? contacts : [];
+  const filteredContacts = safeContacts.filter((c) =>
+    (c && c.name && c.name.toLowerCase().includes(searchTerm.toLowerCase())) || 
+    (c && c.type === 'user' && c.description?.toLowerCase().includes(searchTerm.toLowerCase()))
   );
 
   // Debounced Global Search
@@ -50,7 +52,7 @@ const Sidebar: React.FC<SidebarProps> = ({
                 const results = await onSearchUsers(searchTerm);
                 // Filter out users who are already in contacts
                 const newResults = results.filter(user => 
-                    !contacts.some(contact => contact.id === user.id)
+                    !safeContacts.some(contact => contact && contact.id === user.id)
                 );
                 setGlobalResults(newResults);
             } catch (error) {

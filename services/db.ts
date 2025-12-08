@@ -117,11 +117,14 @@ export const db = {
             const localData = this.getData(userId);
             
             // CRITICAL FIX: Trust Server Data for History and Contacts
-            // This ensures messages received while offline are pulled into the client
+            // Ensure we don't merge undefined/null arrays
+            const validServerContacts = Array.isArray(serverData.contacts) ? serverData.contacts : [];
+            const validLocalContacts = Array.isArray(localData.contacts) ? localData.contacts : [];
+            
             const mergedData: UserData = {
                 ...localData,
                 profile: serverData.profile || localData.profile,
-                contacts: serverData.contacts && serverData.contacts.length > 0 ? serverData.contacts : localData.contacts,
+                contacts: validServerContacts.length > 0 ? validServerContacts : validLocalContacts,
                 chatHistory: serverData.chatHistory && Object.keys(serverData.chatHistory).length > 0 ? serverData.chatHistory : localData.chatHistory,
                 settings: serverData.settings || localData.settings,
                 devices: serverData.devices || localData.devices
@@ -135,13 +138,25 @@ export const db = {
 
     getData(userId: string): UserData {
         const raw = localStorage.getItem(DATA_PREFIX + userId);
+        const defaultData = this._getDefaultData(userId);
+
         if (!raw) {
-            return this._getDefaultData(userId);
+            return defaultData;
         }
         try {
-            return JSON.parse(raw);
+            const parsed = JSON.parse(raw);
+            
+            // SAFETY MERGE: ensure all top-level keys exist and are correct type
+            return {
+                profile: parsed.profile || defaultData.profile,
+                contacts: Array.isArray(parsed.contacts) ? parsed.contacts : defaultData.contacts,
+                chatHistory: parsed.chatHistory || defaultData.chatHistory,
+                settings: parsed.settings || defaultData.settings,
+                devices: Array.isArray(parsed.devices) ? parsed.devices : defaultData.devices
+            };
         } catch (e) {
-            return this._getDefaultData(userId);
+            console.error("Data corrupted, resetting", e);
+            return defaultData;
         }
     },
 
