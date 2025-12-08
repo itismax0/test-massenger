@@ -10,6 +10,14 @@ export type MessageType = 'text' | 'image' | 'sticker' | 'file' | 'location' | '
 
 export type ContactType = 'user' | 'group' | 'channel';
 
+export interface GroupMember {
+  id: string;
+  name: string;
+  avatarUrl: string;
+  role: 'admin' | 'member' | 'owner';
+  lastSeen?: string;
+}
+
 export interface Message {
   id: string;
   text: string;
@@ -36,8 +44,14 @@ export interface Contact {
   systemInstruction?: string; // For Gemini persona
   type: ContactType;
   membersCount?: number;
+  members?: GroupMember[]; // Added for Groups
   email?: string; // For user profile info
   description?: string; // For groups/channels
+  settings?: {
+      historyVisible?: boolean;
+      sendMessages?: boolean;
+      autoDeleteMessages?: number; // Added: 0 = off, otherwise seconds
+  };
 }
 
 export interface ChatSession {

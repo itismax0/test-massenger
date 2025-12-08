@@ -1,4 +1,3 @@
-
 import { io, Socket } from 'socket.io-client';
 import { Message } from '../types';
 
@@ -17,7 +16,8 @@ class SocketService {
         this.socket = io(SOCKET_URL, {
             path: '/socket.io', // Standard Socket.io path
             transports: ['websocket', 'polling'], // Try websocket first
-            reconnectionAttempts: 5
+            reconnectionAttempts: 10,
+            reconnectionDelay: 1000
         });
 
         this.socket.on('connect', () => {
@@ -89,8 +89,16 @@ class SocketService {
 
     // --- Listeners ---
 
+    onConnect(callback: () => void) {
+        this.socket?.on('connect', callback);
+    }
+
     onMessage(callback: (msg: Message) => void) {
         this.socket?.on('receive_message', callback);
+    }
+
+    onMessageSent(callback: (data: { tempId: string, status: string }) => void) {
+        this.socket?.on('message_sent', callback);
     }
 
     onTyping(callback: (data: { from: string, isTyping: boolean }) => void) {

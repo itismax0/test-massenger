@@ -1,3 +1,4 @@
+
 import express from 'express';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -46,15 +47,13 @@ const connectDB = async () => {
 connectDB();
 
 // --- Mongoose Schemas ---
-// We store data slightly denormalized to match the existing frontend "UserData" structure
-// allowing for a smoother transition without rewriting the entire frontend logic.
 
 const UserSchema = new mongoose.Schema({
     id: { type: String, required: true, unique: true }, // Custom string ID
     name: String,
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true }, // In real app, hash this!
-    username: { type: String, unique: true, sparse: true }, // Sparse allows multiple users to have no username (null/undefined)
+    username: { type: String, unique: true, sparse: true }, 
     avatarUrl: String,
     
     // Storing JSON blobs for frontend state compatibility
@@ -65,6 +64,25 @@ const UserSchema = new mongoose.Schema({
 });
 
 const User = mongoose.model('User', UserSchema);
+
+const GroupSchema = new mongoose.Schema({
+    id: { type: String, required: true, unique: true },
+    name: String,
+    avatarUrl: String,
+    type: { type: String, enum: ['group', 'channel'], default: 'group' },
+    members: [{ type: String }], // Array of User IDs
+    admins: [{ type: String }], // Array of User IDs
+    ownerId: String,
+    settings: {
+        historyVisible: { type: Boolean, default: true },
+        sendMessages: { type: Boolean, default: true },
+        autoDeleteMessages: { type: Number, default: 0 }
+    },
+    chatHistory: { type: Array, default: [] }, // Array of Messages
+    createdAt: { type: Number, default: Date.now }
+});
+
+const Group = mongoose.model('Group', GroupSchema);
 
 // --- Routes ---
 
@@ -88,8 +106,6 @@ app.post('/api/register', async (req, res) => {
             name,
             email,
             password,
-            // Remove username from here so it defaults to undefined (allowed by sparse index)
-            // username: '', 
             avatarUrl: '',
         });
 
@@ -99,7 +115,6 @@ app.post('/api/register', async (req, res) => {
         res.json(userProfile);
     } catch (e) {
         console.error("Registration Error:", e);
-        // Send more detailed error if possible
         const msg = e.code === 11000 ? 'Username or Email already taken' : 'Server error during registration';
         res.status(500).json({ error: msg });
     }
@@ -112,11 +127,9 @@ app.post('/api/login', async (req, res) => {
         const user = await User.findOne({ email });
 
         if (!user) {
-            // Security: don't reveal user doesn't exist
             return res.status(401).json({ error: 'Invalid email or password' });
         }
 
-        // Check password (direct comparison for now, should be bcrypt in future)
         if (user.password !== password) {
              return res.status(401).json({ error: 'Invalid email or password' });
         }
@@ -135,7 +148,6 @@ app.post('/api/users/:id', async (req, res) => {
         const { id } = req.params;
         const updates = req.body;
 
-        // Check username uniqueness if changing
         if (updates.username) {
             const taken = await User.findOne({ username: updates.username, id: { $ne: id } });
             if (taken) return res.status(400).json({ error: 'Username taken' });
@@ -144,7 +156,7 @@ app.post('/api/users/:id', async (req, res) => {
         const user = await User.findOneAndUpdate(
             { id: id },
             { $set: updates },
-            { new: true } // Return updated doc
+            { new: true }
         );
 
         if (!user) return res.status(404).json({ error: 'User not found' });
@@ -156,13 +168,51 @@ app.post('/api/users/:id', async (req, res) => {
     }
 });
 
+// Create Group
+app.post('/api/groups', async (req, res) => {
+    try {
+        const { name, type, members, avatarUrl, ownerId, settings } = req.body;
+        
+        // Ensure owner is in members
+        const allMembers = Array.from(new Set([...members, ownerId]));
+
+        const newGroup = new Group({
+            id: Date.now().toString(36) + Math.random().toString(36).substr(2, 5),
+            name,
+            type: type || 'group',
+            avatarUrl: avatarUrl || '',
+            members: allMembers,
+            admins: [ownerId],
+            ownerId,
+            settings: settings || {
+                historyVisible: true, 
+                sendMessages: true,
+                autoDeleteMessages: 0
+            },
+            chatHistory: [{
+                id: Date.now().toString(),
+                text: type === 'channel' ? 'Канал создан' : 'Группа создана',
+                senderId: ownerId,
+                timestamp: Date.now(),
+                status: 'read',
+                type: 'text'
+            }]
+        });
+
+        await newGroup.save();
+        res.json(newGroup);
+    } catch(e) {
+        console.error("Create Group Error:", e);
+        res.status(500).json({ error: 'Failed to create group' });
+    }
+});
+
 // Search
 app.get('/api/users/search', async (req, res) => {
     try {
         const { query, currentUserId } = req.query;
         if (!query) return res.json([]);
 
-        // Regex for case-insensitive partial match
         const regex = new RegExp(query, 'i');
 
         const users = await User.find({
@@ -170,7 +220,7 @@ app.get('/api/users/search', async (req, res) => {
             $or: [
                 { name: regex }, 
                 { username: regex },
-                { email: regex } // ADDED: Allow searching by email
+                { email: regex }
             ]
         }).select('-password -_id -__v -chatHistory -contacts -settings -devices').limit(20);
 
@@ -189,8 +239,57 @@ app.get('/api/sync/:userId', async (req, res) => {
         if (!user) return res.status(404).json({ error: 'User not found' });
 
         const { password: _, _id, __v, ...fullData } = user.toObject();
+
+        // --- Fetch Groups ---
+        // Find all groups where userId is in members
+        const groups = await Group.find({ members: userId });
         
-        // Return structure matching UserData interface
+        // Convert groups to "Contact" objects
+        const groupContacts = await Promise.all(groups.map(async (g) => {
+            // Populate member info
+            const memberUsers = await User.find({ id: { $in: g.members } }).select('id name avatarUrl');
+            const members = memberUsers.map(u => ({
+                id: u.id,
+                name: u.name,
+                avatarUrl: u.avatarUrl,
+                role: g.ownerId === u.id ? 'owner' : (g.admins.includes(u.id) ? 'admin' : 'member'),
+                lastSeen: 'недавно'
+            }));
+
+            // Get last message from group history
+            const lastMsg = g.chatHistory.length > 0 ? g.chatHistory[g.chatHistory.length - 1] : null;
+
+            return {
+                id: g.id,
+                name: g.name,
+                avatarUrl: g.avatarUrl,
+                lastMessage: lastMsg ? (lastMsg.text || 'Вложение') : '',
+                lastMessageTime: lastMsg ? lastMsg.timestamp : g.createdAt,
+                unreadCount: 0, // Simplified for now
+                isOnline: false,
+                type: g.type,
+                membersCount: g.members.length,
+                members: members,
+                settings: g.settings,
+                description: g.type === 'channel' ? 'Канал' : 'Группа'
+            };
+        }));
+
+        // Merge User Contacts + Groups
+        // We prioritize Server Groups over Local Contacts for groups
+        const userContacts = fullData.contacts || [];
+        // Filter out groups from stored contacts (to replace with fresh data)
+        const cleanUserContacts = userContacts.filter(c => c.type === 'user' || c.id === 'saved-messages');
+        const finalContacts = [...groupContacts, ...cleanUserContacts];
+
+        // Merge Chat History
+        // User history contains DMs. Group history is stored in Group docs.
+        // We need to merge them for the client.
+        const combinedHistory = { ...fullData.chatHistory };
+        groups.forEach(g => {
+            combinedHistory[g.id] = g.chatHistory;
+        });
+
         res.json({
             profile: {
                 id: fullData.id,
@@ -199,17 +298,18 @@ app.get('/api/sync/:userId', async (req, res) => {
                 avatarUrl: fullData.avatarUrl,
                 username: fullData.username
             },
-            contacts: fullData.contacts || [], 
-            chatHistory: fullData.chatHistory || {},
+            contacts: finalContacts, 
+            chatHistory: combinedHistory,
             settings: fullData.settings || {}, 
             devices: fullData.devices || []
         });
     } catch (e) {
+        console.error("Sync Error:", e);
         res.status(500).json({ error: 'Sync failed' });
     }
 });
 
-// Handle generic API 404s to prevent hanging
+// Handle generic API 404s
 app.all('/api/*', (req, res) => {
     res.status(404).json({ error: 'API Endpoint not found' });
 });
@@ -217,35 +317,44 @@ app.all('/api/*', (req, res) => {
 // --- Socket.io ---
 
 const io = new Server(server, {
-    maxHttpBufferSize: 1e8, // Increase buffer size for images (100MB)
+    maxHttpBufferSize: 1e8,
     cors: {
-        origin: "*", // Allow connections from anywhere (Render needs this)
+        origin: "*", 
         methods: ["GET", "POST"]
     }
 });
 
-// Helper to update chat history in MongoDB
 const saveMessageToDB = async (senderId, receiverId, message) => {
     try {
-        // SPECIAL CASE: Saved Messages (Cloud Storage)
         if (receiverId === 'saved-messages') {
              const sender = await User.findOne({ id: senderId });
              if (sender) {
                  const history = sender.chatHistory || {};
                  const chat = history['saved-messages'] || [];
-                 chat.push({ ...message, status: 'read' }); // Automatically read
+                 chat.push({ ...message, status: 'read' });
                  history['saved-messages'] = chat;
                  await User.updateOne({ id: senderId }, { $set: { chatHistory: history } });
              }
              return;
         }
 
-        // 1. Update Sender's History
+        // Check if receiver is a Group
+        const group = await Group.findOne({ id: receiverId });
+        if (group) {
+            // It's a group message
+            await Group.updateOne(
+                { id: receiverId }, 
+                { $push: { chatHistory: message } }
+            );
+            return;
+        }
+
+        // It's a DM
+        // 1. Update Sender
         const sender = await User.findOne({ id: senderId });
         if (sender) {
             const history = sender.chatHistory || {};
             const chat = history[receiverId] || [];
-            // Ensure no duplicates
             if (!chat.some(m => m.id === message.id)) {
                 chat.push({ ...message, status: 'sent' });
                 history[receiverId] = chat;
@@ -253,7 +362,7 @@ const saveMessageToDB = async (senderId, receiverId, message) => {
             }
         }
 
-        // 2. Update Receiver's History
+        // 2. Update Receiver
         const receiver = await User.findOne({ id: receiverId });
         if (receiver) {
             const history = receiver.chatHistory || {};
@@ -270,29 +379,34 @@ const saveMessageToDB = async (senderId, receiverId, message) => {
 };
 
 io.on('connection', (socket) => {
-    // console.log('User connected:', socket.id);
-
-    socket.on('join', (userId) => {
+    socket.on('join', async (userId) => {
         socket.join(userId);
+        
+        // Also join all group rooms this user is part of
+        try {
+            const groups = await Group.find({ members: userId });
+            groups.forEach(g => {
+                socket.join(g.id);
+            });
+        } catch (e) {
+            console.error("Error joining group rooms", e);
+        }
     });
 
     socket.on('send_message', async (data) => {
         const { receiverId, message } = data;
         const senderId = message.senderId;
 
-        // Save to DB
         await saveMessageToDB(senderId, receiverId, message);
 
-        // If it's saved messages, we don't need to emit to anyone else
         if (receiverId === 'saved-messages') {
             socket.emit('message_sent', { tempId: message.id, status: 'read' });
             return;
         }
 
-        // Relay to receiver
-        io.to(receiverId).emit('receive_message', message);
+        // Emit to receiver (works for both User ID room and Group ID room)
+        socket.to(receiverId).emit('receive_message', message);
         
-        // Notify sender it was sent (optional)
         socket.emit('message_sent', { tempId: message.id, status: 'sent' });
     });
 
@@ -300,7 +414,6 @@ io.on('connection', (socket) => {
         io.to(to).emit('typing', { from, isTyping });
     });
 
-    // WebRTC
     socket.on("callUser", ({ userToCall, signalData, from, name }) => {
         io.to(userToCall).emit("callUser", { signal: signalData, from, name });
     });
@@ -318,24 +431,15 @@ io.on('connection', (socket) => {
     });
 });
 
-// --- SERVE STATIC FRONTEND (Production) ---
-// This is critical for Render. The Node server serves the built React app.
 if (process.env.NODE_ENV === 'production' || process.env.RENDER) {
-    // Vite builds to 'dist' folder in root
     const distPath = path.join(__dirname, '../dist');
-    
     app.use(express.static(distPath));
-
-    // Handle React routing, return all requests to React app
     app.get('*', (req, res) => {
-        // Skip API routes
         if (req.path.startsWith('/api') || req.path.startsWith('/socket.io')) return;
-        
         res.sendFile(path.join(distPath, 'index.html'));
     });
 }
 
-// Start Server
 server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });

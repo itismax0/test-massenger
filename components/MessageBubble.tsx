@@ -2,14 +2,18 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Message } from '../types';
 import { CURRENT_USER_ID } from '../constants';
 import ReactMarkdown from 'react-markdown';
-import { FileText, Download, MapPin, Play, Pause } from 'lucide-react';
+import { FileText, Download, MapPin, Play, Pause, Check, CheckCheck, Clock } from 'lucide-react';
+import './MessageBubble.css';
 
 interface MessageBubbleProps {
   message: Message;
+  currentUserId?: string;
 }
 
-const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
-  const isMe = message.senderId === CURRENT_USER_ID;
+const MessageBubble: React.FC<MessageBubbleProps> = ({ message, currentUserId }) => {
+  // Use currentUserId if available, otherwise fallback to constant (for dev/local mode)
+  const isMe = message.senderId === (currentUserId || CURRENT_USER_ID);
+  
   const isSticker = message.type === 'sticker';
   const isImage = message.type === 'image';
   const isFile = message.type === 'file';
@@ -66,6 +70,17 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
       return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  const renderStatus = () => {
+    if (!isMe) return null;
+    return (
+      <span className="message-status">
+        {message.status === 'sending' && <Clock size={10} className="text-gray-300" />}
+        {message.status === 'sent' && <Check size={14} />}
+        {message.status === 'read' && <CheckCheck size={14} className="read-icon" />}
+      </span>
+    );
+  };
+
   if (isSticker && message.attachmentUrl) {
     return (
       <div className={`flex w-full ${isMe ? 'justify-end' : 'justify-start'} mb-4 group`}>
@@ -77,6 +92,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
           />
           <div className={`text-[10px] mt-1 opacity-70 flex items-center gap-1 ${isMe ? 'text-slate-400 justify-end' : 'text-slate-400 justify-start'}`}>
              <span>{formatTime(message.timestamp)}</span>
+             {renderStatus()}
           </div>
         </div>
       </div>
@@ -190,13 +206,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({ message }) => {
         
         <div className={`text-[10px] mt-1 opacity-70 flex items-center gap-1 ${isMe ? 'text-slate-300 justify-end' : 'text-slate-400 dark:text-slate-300 justify-start'}`}>
           <span>{formatTime(message.timestamp)}</span>
-          {isMe && (
-            <span>
-              {message.status === 'sending' && '•'}
-              {message.status === 'sent' && '✓'}
-              {message.status === 'read' && '✓✓'}
-            </span>
-          )}
+          {renderStatus()}
         </div>
       </div>
     </div>

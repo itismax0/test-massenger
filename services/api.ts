@@ -70,6 +70,12 @@ export const api = {
             body: JSON.stringify(updates)
         }),
 
+    createGroup: (name: string, type: string, members: string[], avatarUrl: string, ownerId: string) =>
+        request('/api/groups', {
+            method: 'POST',
+            body: JSON.stringify({ name, type, members, avatarUrl, ownerId })
+        }),
+
     searchUsers: (query: string, currentUserId: string) =>
         request(`/api/users/search?query=${encodeURIComponent(query)}&currentUserId=${currentUserId}`),
 

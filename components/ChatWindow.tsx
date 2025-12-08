@@ -1,4 +1,3 @@
-
 import React, { useState, useRef, useEffect } from 'react';
 import { Contact, Message, AppSettings, MessageType } from '../types';
 import { Send, Paperclip, Smile, MoreVertical, Phone, ArrowLeft, Image as ImageIcon, File as FileIcon, X, MapPin, Mic, Trash2, Lock } from 'lucide-react';
@@ -19,6 +18,7 @@ interface ChatWindowProps {
   appearance: AppSettings['appearance'];
   onOpenProfile: () => void;
   onCall?: () => void; // Added onCall prop
+  currentUserId?: string; // Prop for identifying "Me"
 }
 
 const BACKGROUND_THEMES: Record<string, string> = {
@@ -42,7 +42,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
     onBack, 
     appearance,
     onOpenProfile,
-    onCall // Destructure onCall
+    onCall, // Destructure onCall
+    currentUserId
 }) => {
   const [inputValue, setInputValue] = useState('');
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -248,7 +249,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
           <button onClick={(e) => { e.stopPropagation(); onBack(); }} className="md:hidden text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200">
             <ArrowLeft size={20} />
           </button>
-          <Avatar src={contact.avatarUrl} alt={contact.name} size="md" />
+          <Avatar src={contact.avatarUrl} alt={contact.name} size="md" id={contact.id} />
           <div>
             <div className="flex items-center gap-1.5">
                 <h2 className="text-slate-900 dark:text-white font-semibold text-sm leading-tight">
@@ -295,7 +296,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
             <div className="text-center text-xs text-gray-400 my-4 uppercase tracking-widest">Сегодня</div>
             
             {messages.map((msg) => (
-            <MessageBubble key={msg.id} message={msg} />
+            <MessageBubble key={msg.id} message={msg} currentUserId={currentUserId} />
             ))}
 
             {isTyping && (

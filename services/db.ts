@@ -1,3 +1,4 @@
+
 import { api } from './api';
 import { AppSettings, Contact, Message, UserData, UserProfile, DeviceSession } from '../types';
 import { CONTACTS, INITIAL_SETTINGS, INITIAL_DEVICES, SAVED_MESSAGES_ID } from '../constants';
@@ -86,6 +87,21 @@ export const db = {
         return updatedProfile;
     },
 
+    async createGroup(name: string, type: 'group'|'channel', members: string[], avatarUrl: string, ownerId: string) {
+        if (ownerId.startsWith('dev-')) {
+            // Local dev implementation mock
+            return {
+                id: Date.now().toString(),
+                name,
+                type,
+                avatarUrl,
+                members: [...members, ownerId],
+                chatHistory: []
+            };
+        }
+        return await api.createGroup(name, type, members, avatarUrl, ownerId);
+    },
+
     async searchUsers(query: string, currentUserId: string): Promise<UserProfile[]> {
         return await api.searchUsers(query, currentUserId);
     },
@@ -98,16 +114,17 @@ export const db = {
 
         try {
             const serverData = await api.syncData(userId);
-            
-            // Merge server profile with local data
             const localData = this.getData(userId);
             
+            // CRITICAL FIX: Trust Server Data for History and Contacts
+            // This ensures messages received while offline are pulled into the client
             const mergedData: UserData = {
                 ...localData,
                 profile: serverData.profile || localData.profile,
-                // In a real app, you would merge contacts/chats carefully here.
-                // For now, we trust local for chats/settings to keep it simple,
-                // or you could trust server if you implement full cloud storage.
+                contacts: serverData.contacts && serverData.contacts.length > 0 ? serverData.contacts : localData.contacts,
+                chatHistory: serverData.chatHistory && Object.keys(serverData.chatHistory).length > 0 ? serverData.chatHistory : localData.chatHistory,
+                settings: serverData.settings || localData.settings,
+                devices: serverData.devices || localData.devices
             };
             
             this.saveData(userId, mergedData);
