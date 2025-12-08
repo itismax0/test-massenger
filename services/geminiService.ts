@@ -7,11 +7,9 @@ class GeminiService {
   private chatSessions: Map<string, Chat>;
 
   constructor() {
-    const apiKey = process.env.API_KEY || '';
-    if (!apiKey) {
-      console.warn('API_KEY is missing from environment variables.');
-    }
-    this.ai = new GoogleGenAI({ apiKey });
+    // API key must be obtained exclusively from process.env.API_KEY
+    // and used directly in initialization.
+    this.ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     this.chatSessions = new Map();
   }
 

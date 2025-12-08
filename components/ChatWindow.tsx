@@ -1,3 +1,4 @@
+
 import React, { useState, useRef, useEffect } from 'react';
 import { Contact, Message, AppSettings, MessageType } from '../types';
 import { Send, Paperclip, Smile, MoreVertical, Phone, ArrowLeft, Image as ImageIcon, File as FileIcon, X, MapPin, Mic, Trash2, Lock } from 'lucide-react';
@@ -51,6 +52,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [showEncryptionModal, setShowEncryptionModal] = useState(false);
+
+  // Safe fallback for appearance if it's undefined/null to prevent crashes
+  const safeAppearance = appearance || { chatBackground: 'default', textSize: 100, darkMode: false };
 
   // Voice recording state
   const [isRecording, setIsRecording] = useState(false);
@@ -218,13 +222,13 @@ const ChatWindow: React.FC<ChatWindowProps> = ({
       return contact.isOnline ? 'в сети' : 'был(а) недавно';
   };
 
-  const bgClass = BACKGROUND_THEMES[appearance.chatBackground] || BACKGROUND_THEMES['default'];
+  const bgClass = BACKGROUND_THEMES[safeAppearance.chatBackground] || BACKGROUND_THEMES['default'];
   const showMic = !inputValue.trim() && !selectedFile;
 
   return (
     <div 
         className={`flex flex-col h-full relative transition-colors duration-200 ${bgClass}`}
-        style={{ fontSize: `${appearance.textSize}%` }}
+        style={{ fontSize: `${safeAppearance.textSize}%` }}
     >
        <div className="absolute inset-0 opacity-[0.03] dark:opacity-[0.05] pointer-events-none" 
             style={{ 

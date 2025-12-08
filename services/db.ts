@@ -135,7 +135,7 @@ export const db = {
                 profile: serverData.profile || localData.profile,
                 contacts: validServerContacts.length > 0 ? validServerContacts : validLocalContacts,
                 chatHistory: serverData.chatHistory && Object.keys(serverData.chatHistory).length > 0 ? serverData.chatHistory : localData.chatHistory,
-                settings: serverData.settings || localData.settings,
+                settings: this._sanitizeSettings(serverData.settings || localData.settings),
                 devices: serverData.devices || localData.devices
             };
             
@@ -174,7 +174,7 @@ export const db = {
                 profile: profile,
                 contacts: contacts,
                 chatHistory: parsed.chatHistory || defaultData.chatHistory,
-                settings: parsed.settings || defaultData.settings,
+                settings: this._sanitizeSettings(parsed.settings),
                 devices: Array.isArray(parsed.devices) ? parsed.devices : defaultData.devices
             };
         } catch (e) {
@@ -206,6 +206,21 @@ export const db = {
             type: c.type || 'user',
             lastMessage: c.lastMessage || '',
             lastMessageTime: c.lastMessageTime || Date.now()
+        };
+    },
+
+    // Helper to deeply merge/repair settings
+    _sanitizeSettings(settings: any): AppSettings {
+        if (!settings || typeof settings !== 'object') {
+            return INITIAL_SETTINGS;
+        }
+
+        // We use spread to ensure nested objects exist if they are missing in the source
+        return {
+            notifications: { ...INITIAL_SETTINGS.notifications, ...settings.notifications },
+            privacy: { ...INITIAL_SETTINGS.privacy, ...settings.privacy },
+            appearance: { ...INITIAL_SETTINGS.appearance, ...settings.appearance },
+            language: settings.language || INITIAL_SETTINGS.language
         };
     },
 

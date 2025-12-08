@@ -338,12 +338,14 @@ const App: React.FC = () => {
   };
 
   useEffect(() => {
-    if (settings.appearance.darkMode) {
+    // Check if settings.appearance exists before accessing darkMode
+    const isDark = settings?.appearance?.darkMode || false;
+    if (isDark) {
       document.documentElement.classList.add('dark');
     } else {
       document.documentElement.classList.remove('dark');
     }
-  }, [settings.appearance.darkMode]);
+  }, [settings?.appearance?.darkMode]); // Use optional chaining in dependency array too
 
   useEffect(() => {
     if (isAuthenticated && !activeContactId && window.innerWidth >= 768 && contacts.length > 0) {
